@@ -1,0 +1,9 @@
+name: lancedb
+version: 0.1.0
+description: "LanceDB hybrid memory — embedded vector + FTS recall, workspace facts, transparent forget."
+requires_env: []
+hooks:
+  - on_pre_compress
+  - on_session_end
+  - on_memory_write
+  - on_session_switch

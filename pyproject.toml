@@ -1,0 +1,37 @@
+[project]
+name = "hermes-agent-memory"
+version = "0.1.0"
+description = "LanceDB-backed memory provider plugin for Hermes Agent."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [
+    { name = "LanceDB" },
+]
+dependencies = [
+    "lancedb>=0.13.0",
+    "sentence-transformers>=3.0.0",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[tool.uv]
+# This isn't a pip-installable package — it's a directory loaded by Hermes's
+# plugin discovery system. `uv sync` should just manage the venv, not try to
+# build us.
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+pythonpath = ["../hermes-agent"]
