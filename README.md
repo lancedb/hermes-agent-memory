@@ -2,212 +2,233 @@
 
 LanceDB-backed memory provider plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
-Embedded hybrid recall (vector + BM25 + RRF), workspace-contained durable facts,
-transparent forget flows, mid-session fact extraction, and optional
-Sentence Transformers cross-encoder reranking.
+Embeds a workspace-scoped LanceDB table at `~/.hermes/lancedb/memories.lance` and exposes four tools to the agent: `lancedb_recall`, `lancedb_remember`, `lancedb_read`, `lancedb_forget`. Recall is hybrid (vector ANN + BM25, fused via RRF) with an optional Sentence Transformers cross-encoder reranker. Durable facts are extracted from sessions at pre-compress and session end. Everything runs in Hermes's Python process — no external service, no server.
 
----
+## Features
 
-## What is Hermes Agent (one-paragraph version)
+- **Hybrid recall**: vector + BM25 fused with RRF; per-call switchable to pure vector or pure FTS.
+- **Rerankers (optional)**: `cross-encoder/ettin-reranker-32m-v1` by default; configurable model and candidate-pool size.
+- *Workspace isolation*: every row carries an `agent_workspace` tag and recall pre-filters by it.
+- **Fact-first retrieval**: recall surfaces extracted facts; raw conversation turns are stored as provenance and used only as fallback.
+- **Mid-session extraction**: facts are pulled out via an auxiliary LLM on `on_pre_compress` and `on_session_end`, so insights survive context compression.
+- **Transparent forget**: preview candidates, then delete by exact ID.
+- **Auto-compaction**: periodic `table.optimize(cleanup_older_than=...)` runs in the background to bound fragment and version-file growth from single-row writes.
 
-Hermes is an open-source agent framework from Nous Research. You chat with it in a
-terminal TUI, and an LLM (OpenAI, Anthropic, OpenRouter, local — your choice) responds
-between tool calls — file ops, web fetch, shell, vision, **memory**, etc. Sessions
-persist locally in `~/.hermes/`, can be resumed, and can also run via messaging
-bridges (Telegram, Discord) or on a cron schedule. Plugins extend specific surfaces;
-this one plugs into the memory surface, replacing the default in-prompt memory
-with an embedded LanceDB store.
-
-## What this plugin gives you
-
-- **Hybrid retrieval** — vector + BM25 fused via LanceDB's built-in RRF.
-  Switchable per-config or per-tool-call to pure vector or pure FTS mode for
-  workloads where one beats the other.
-- **Fact-first memory** — raw turns are stored as provenance, but recall prefers
-  durable facts with short abstracts so noisy chat history does not crowd out
-  user preferences and project decisions.
-- **Mid-session extraction** — facts get extracted on `on_pre_compress`
-  (not just session end), so insights are recallable before context compression
-  discards them.
-- **Transparent memory management** — provider tools let the agent recall,
-  remember, read provenance, and preview/delete memories without exposing raw
-  database operations to users.
-- **Embedded, no server** — the table lives at `~/.hermes/lancedb/memories.lance`.
-  Open it in any LanceDB client to debug retrieval directly.
-
-## Prerequisites
+## Requirements
 
 - Python 3.11+
-- [`uv`](https://docs.astral.sh/uv/) — fast Python package manager
-- [Hermes Agent](https://github.com/NousResearch/hermes-agent) cloned somewhere
-- An LLM API key (OpenAI, OpenRouter, Anthropic, etc.)
+- [`uv`](https://docs.astral.sh/uv/)
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed locally
+- An LLM API key (OpenAI, OpenRouter, Anthropic, …)
+
+Runtime dependencies installed into Hermes's venv: `lancedb >= 0.13`, `sentence-transformers >= 3.0`, `pyyaml`.
 
 ---
 
-## Quickstart — full path from zero to chatting
+## Installation: users
 
-If you've never run Hermes before, do every step in order. If Hermes is already
-working on your machine, skip to **Step 3**.
+Use this section if you want LanceDB memory in your own Hermes setup. If you plan to edit the plugin's source, jump to [Installation: developers](#installation--developers).
 
-### Step 1 — Install Hermes Agent
-
-One line on macOS / Linux / WSL2:
+### 1. Install Hermes Agent
 
 ```sh
+# macOS / Linux / WSL2
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+
+# Windows (PowerShell)
+iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
 ```
 
-(Windows users: `iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)`)
-
-The installer handles `uv`, Python 3.11, Node.js, ripgrep, ffmpeg, and on
-Windows MinGit. It git-clones Hermes for you into `~/.hermes/hermes-agent/`,
-creates the venv at `~/.hermes/hermes-agent/venv/`, and symlinks the
-binary to `~/.local/bin/hermes`. You don't have to manage any of that
-directly.
-
-If the installer reports gaps afterwards, the two commands that fix almost
-everything are:
+The installer handles `uv`, Python 3.11, Node.js, ripgrep, ffmpeg, and (on Windows) MinGit. It clones Hermes into `~/.hermes/hermes-agent/` and symlinks the binary to `~/.local/bin/hermes`. After it finishes:
 
 ```sh
-hermes doctor --fix     # creates missing symlinks, dirs, etc.
+hermes doctor --fix     # repairs symlinks, dirs, etc.
 hermes setup            # interactive: .env, API key, model picker
+hermes doctor           # final sanity check
 ```
 
-### Step 2 — Configure your LLM
+> If you have AWS credentials in your shell environment, `hermes doctor` may log a Bedrock `AccessDeniedException`. This is Hermes's provider auto-detection and is ignorable if you're using OpenAI / Anthropic / OpenRouter.
 
-`hermes setup` (from Step 1) walks you through this interactively. It will:
+### 2. Install the plugin
 
-1. Create `~/.hermes/.env` and prompt for your API key (OpenAI, Anthropic,
-   OpenRouter, etc.). Pasted keys stay in `.env`, never in shell history.
-2. Pick a model — for OpenAI, `gpt-4o-mini` is cheap+fast, `gpt-4o` for
-   stronger reasoning.
-3. Write the choice into `~/.hermes/config.yaml`.
-
-Verify everything is wired:
-
-```sh
-hermes doctor
-```
-
-`hermes doctor` is the canary — it validates env vars, config, and deps,
-and prints red lines for anything missing. Fix any issues before continuing.
-
-> **Note on AWS Bedrock complaints.** If you have AWS credentials in your
-> environment (`AWS_ACCESS_KEY_ID` etc.) from other work, Hermes will try
-> to auto-detect Bedrock as a possible provider and may report
-> `AccessDeniedException`. This is ignorable if you're using OpenAI — it's
-> just Hermes failing gracefully through its provider auto-detection.
-
-First chat to confirm the LLM responds:
-
-```sh
-hermes chat -q "Hello, what tools do you have access to?"
-```
-
-### Step 3 — Install this plugin
-
-#### Option A — once it's published (the user-facing flow)
+Once published:
 
 ```sh
 hermes plugins install lancedb/hermes-agent-memory
 ```
 
-This git-clones into `~/.hermes/plugins/lancedb/` and renders `after-install.md`
-in a Rich panel telling you what's next.
-
-#### Option B — local dev (clone and symlink)
+Until then, or if you want a local copy:
 
 ```sh
-git clone https://github.com/lancedb/hermes-agent-memory ~/code/hermes-memory-lancedb
-ln -sf ~/code/hermes-memory-lancedb ~/.hermes/plugins/lancedb
+git clone https://github.com/lancedb/hermes-agent-memory ~/code/hermes-agent-memory
+ln -sf ~/code/hermes-agent-memory ~/.hermes/plugins/lancedb
 ```
 
-The symlink lets you edit the plugin in place and have Hermes pick up changes
-on the next session.
+### 3. Install runtime dependencies into Hermes's venv
 
-### Step 4 — Install the memory runtime deps
+Hermes loads plugins inside its own Python interpreter. Install `lancedb` and `sentence-transformers` *there* — not into a separate venv.
 
-Hermes runs plugins inside Hermes's own Python environment. Install LanceDB and
-Sentence Transformers there first. For a source checkout at `~/code/hermes-agent`,
-use:
+```sh
+# If Hermes is at a source checkout in ~/code/hermes-agent
+uv pip install --python ~/code/hermes-agent/venv/bin/python3 lancedb sentence-transformers
+
+# If you used the one-line installer
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python3 lancedb sentence-transformers
+```
+
+This step is deliberately manual. `hermes memory setup` does not install these packages: `sentence-transformers` can exceed the setup-time install budget.
+
+### 4. Activate the provider
+
+```sh
+hermes memory setup
+# pick "lancedb"
+```
+
+This writes `memory.provider: lancedb` into `~/.hermes/config.yaml`, writes the plugin defaults under `plugins.lancedb`, and warms `BAAI/bge-small-en-v1.5` (~133 MB) into `~/.cache/huggingface/` so the first chat doesn't hang on a model download.
+
+### 5. Verify
+
+```sh
+hermes plugins list           # should list "lancedb"
+hermes memory status
+hermes chat -q "Hello"        # agent.log should contain `lancedb provider initialized`
+```
+
+---
+
+## Installation: developers
+
+Use this section if you're working on the plugin's source.
+
+### 1. Clone and create the dev venv
+
+```sh
+git clone https://github.com/lancedb/hermes-agent-memory ~/code/hermes-agent-memory
+cd ~/code/hermes-agent-memory
+uv sync --extra dev
+```
+
+`pyproject.toml` sets `[tool.uv] package = false` — `uv sync` only manages a venv for tests, lint, and ad-hoc imports. The plugin itself is loaded by Hermes from its directory, not pip-installed.
+
+### 2. Symlink into Hermes's plugins directory
+
+```sh
+ln -sf ~/code/hermes-agent-memory ~/.hermes/plugins/lancedb
+```
+
+Edits to source files are picked up on the next Hermes session — no reinstall.
+
+### 3. Install runtime deps into Hermes's venv
+
+The dev venv only runs pytest / ruff. For end-to-end testing inside Hermes itself you still need the runtime deps installed against Hermes's Python:
 
 ```sh
 uv pip install --python ~/code/hermes-agent/venv/bin/python3 lancedb sentence-transformers
 ```
 
-If you installed Hermes with the one-line installer, the venv is usually under
-`~/.hermes`:
+### 4. Tests and lint
 
 ```sh
-uv pip install --python ~/.hermes/hermes-agent/venv/bin/python3 lancedb sentence-transformers
+uv run pytest -v
+uv run ruff check .
 ```
 
-This manual step avoids Hermes setup's short dependency-install timeout while the
-heavier `sentence-transformers` stack resolves and installs. This plugin does
-not ask `hermes memory setup` to install those packages automatically.
-
-### Step 5 — Run memory setup
-
-Now activate the provider:
+Add dev-only dependencies via:
 
 ```sh
-hermes memory setup
-# choose "lancedb"
-```
-
-Setup writes `memory.provider: lancedb`, writes `plugins.lancedb` defaults, and
-warms the default embedding model once so download failures happen during setup,
-not during the first chat.
-
-Confirm Hermes sees the active provider:
-
-```sh
-hermes plugins list
-# Should list "lancedb" in the output.
-
-hermes memory status
-```
-
-### Step 6 — Start chatting
-
-Open a chat:
-
-```sh
-hermes chat -q "Remember that I prefer pytest over unittest"
-```
-
-Open a new session and check recall:
-
-```sh
-hermes chat -q "What testing framework do I prefer?"
+uv add --dev pytest-mock
 ```
 
 ---
 
-## Configuration
+## Tools exposed to the agent
 
-Defaults are local and keyless. To tweak, add a `plugins.lancedb` block to
-`~/.hermes/config.yaml`. The most commonly tuned knobs:
+| Tool | Purpose |
+|---|---|
+| `lancedb_recall` | Hybrid (default) / vector / FTS recall over workspace memory. Returns IDs, snippets, scores, provenance turn IDs. |
+| `lancedb_remember` | Store a durable fact (`preference`, `entity`, `event`, `case`, `pattern`, `general`). Deduplicated by content hash. |
+| `lancedb_read` | Fetch one memory by ID, optionally with the full provenance turns it was extracted from. |
+| `lancedb_forget` | Two-step: `action: preview` to list candidates by description, then `action: delete` with the exact ID. |
+
+The provider's system-prompt block instructs the model when to use each tool: `lancedb_remember` only when the user explicitly asks to remember, `lancedb_forget preview` before any delete, etc.
+
+---
+
+## How recall works
+
+1. The tool call enters `LanceDBMemoryProvider.recall()` with `mode`, `query`, `kind`, optional `category`, and `limit`.
+2. A `WHERE` filter is built on workspace + user + kind + category, quoted via `quote_sql`, and passed as a prefilter.
+3. The base retriever depends on `mode`:
+   - `hybrid`: vector ANN + BM25, fused by LanceDB's built-in RRF.
+   - `vector`: ANN over the `vector` column (normalized sentence-transformers embeddings).
+   - `fts`: BM25 over the `content` column.
+4. If `reranker.type` is `cross-encoder`, the candidate pool is expanded to `rerank_top_n`, the cross-encoder reorders the pool, and the top `top_k` are sliced in Python. The reranker instance is cached on the provider and warmed at `initialize()` so the first query doesn't pay the model-load cost.
+5. The per-mode score column (`_distance`, `_score`, or `_relevance_score`) is explicitly projected to silence LanceDB's auto-projection deprecation warning and to keep score metadata in tool responses.
+
+If hybrid fails (e.g. the FTS index hasn't been built yet), `recall()` falls back to pure vector with reranking disabled.
+
+---
+
+## Configuration reference
+
+Defaults are local and keyless. Override under `plugins.lancedb` in `~/.hermes/config.yaml`:
 
 ```yaml
 plugins:
   lancedb:
     retrieval:
       mode: hybrid              # hybrid | vector | fts
-      rerank: none              # none | cross-encoder
       top_k: 10
-      search_kinds: [fact]      # fact by default; turn rows are provenance/fallback
+      search_kinds: [fact]      # which row kinds recall returns; "turn" rows are provenance/fallback
+      reranker:
+        type: rrf               # rrf | cross-encoder
+                                #   rrf          : Reciprocal Rank Fusion. The built-in
+                                #                   fusion strategy for hybrid mode.
+                                #                   No-op for vector/fts (native distance
+                                #                   / BM25 order applies).
+                                #   cross-encoder: replace RRF / native ordering with a
+                                #                   sentence-transformers cross-encoder.
+        model: cross-encoder/ettin-reranker-32m-v1
+        rerank_top_n: 50        # cross-encoder only: pull this many candidates from the
+                                # base retriever, rerank, then slice to top_k. Larger =
+                                # better recall, slower latency.
     extraction:
-      enabled: true             # set false to skip LLM extraction at session boundaries
+      enabled: true             # set false to disable LLM extraction at session boundaries
       min_turns: 3              # skip extraction for very short sessions
     embedding:
       provider: sentence-transformers
       model: BAAI/bge-small-en-v1.5
-    reranker:
-      model: cross-encoder/ettin-reranker-32m-v1
+    maintenance:
+      enabled: true             # background optimize() of the Lance table
+      optimize_every_commits: 50
+                                # trigger when table.version - last_optimized >= N
+      cleanup_older_than_days: 7
+                                # passed to table.optimize(cleanup_older_than=...): old
+                                # version files are garbage-collected on each run
 ```
 
-To use a cheaper LLM for fact extraction (not your main chat model):
+### Knob-by-knob
+
+| Section | Key | Default | Notes |
+|---|---|---|---|
+| `retrieval` | `mode` | `hybrid` | Per-call override available via the `mode` parameter on `lancedb_recall`. |
+| | `top_k` | `10` | Hard cap inside the retrieval layer is 50. |
+| | `search_kinds` | `[fact]` | Recall surfaces facts; turn rows are stored as provenance and used as fallback when no facts match. |
+| `retrieval.reranker` | `type` | `rrf` | `rrf` is a no-op for `mode: vector` / `mode: fts`: there's only one ranked list to return. |
+| | `model` | `cross-encoder/ettin-reranker-32m-v1` | Any HuggingFace cross-encoder ID; lazy-loaded on first use. |
+| | `rerank_top_n` | `50` | Enforced as `max(rerank_top_n, top_k)` so you never fetch fewer than you return. |
+| `extraction` | `enabled` | `true` | Set `false` to skip the auxiliary LLM call. |
+| | `min_turns` | `3` | Skip extraction when the user has spoken fewer than N turns. |
+| `embedding` | `provider` | `sentence-transformers` | Only sentence-transformers is wired today. |
+| | `model` | `BAAI/bge-small-en-v1.5` | Embedding dim must match the existing table: recreate the table if you change models against an existing store. |
+| `maintenance` | `enabled` | `true` | Set `false` to disable auto-compaction. |
+| | `optimize_every_commits` | `50` | Each `add` / `delete` advances `table.version`; auto-compaction fires when delta ≥ this value. |
+| | `cleanup_older_than_days` | `7` | Passed as `timedelta(days=...)` to `table.optimize()`. Set `0` or negative to skip cleanup (compaction only). |
+
+### Auxiliary LLM for extraction
+
+`extraction` uses Hermes's auxiliary client. Point it at a cheaper model independent of your main chat model:
 
 ```yaml
 auxiliary:
@@ -216,95 +237,52 @@ auxiliary:
     model: google/gemini-3-flash
 ```
 
-Hermes's auxiliary client handles provider routing, fallback, and credit
-exhaustion automatically.
-
-See [`after-install.md`](after-install.md) for the setup flow.
+Hermes handles provider routing, fallback, and credit exhaustion.
 
 ---
 
-## Verifying the plugin works
+## Storage layout
 
-| Command | What you should see |
+| Path | Contents |
 |---|---|
-| `hermes plugins list` | `lancedb` in the output |
-| `hermes doctor` | No red lines about memory |
-| `hermes chat -q "test"` | Session opens, no crashes, agent.log shows `lancedb provider initialized` |
-| `tail -f ~/.hermes/logs/agent.log` | Live view of provider activity |
+| `~/.hermes/lancedb/memories.lance/` | LanceDB dataset directory (fragments, manifest, indexes). |
+| `~/.hermes/lancedb/.last_optimize_version` | Sentinel file: `table.version` at the most recent successful `optimize()`. Used to decide when the next auto-compaction fires. |
+| `~/.cache/huggingface/` | Sentence Transformers and cross-encoder model cache (managed by HuggingFace). |
 
-Quick way to peek at what got stored (after a few chats):
+The dataset is a single table named `memories` containing both fact and turn rows; the `kind` column distinguishes them. To poke at it directly:
 
 ```sh
 uv run --project ~/.hermes/hermes-agent python -c "
 import lancedb
 db = lancedb.connect('~/.hermes/lancedb')
-print(db.open_table('memories').to_pandas()[['kind', 'category', 'content']])
+df = db.open_table('memories').to_pandas()
+print(df[['kind', 'category', 'content']].head())
 "
 ```
 
 ---
 
-## Development setup (for contributing to this plugin)
+## Auto-compaction
 
-This plugin has its own `pyproject.toml` with `[tool.uv] package = false` —
-the dev venv is just for tests, lint, and isolated imports. The plugin code
-itself is loaded by Hermes from the symlink, not pip-installed.
+Every `add` / `delete` on the table is a Lance commit. Without intervention, single-row writes (which dominate agent workloads) accumulate tiny fragments and version files indefinitely.
 
-```sh
-cd /path/to/hermes-memory-lancedb
-uv sync --extra dev
-```
+The plugin tracks `table.version` against the sentinel file at `~/.hermes/lancedb/.last_optimize_version` and runs `table.optimize(cleanup_older_than=timedelta(days=N))` in a daemon thread when the delta crosses `optimize_every_commits`. A non-blocking lock guarantees only one optimize runs at a time: re-triggers while one is in flight are skipped, and writers are never blocked.
 
-Run the test suite, linter, and ad-hoc imports against the dev venv:
-
-```sh
-uv run pytest -v
-uv run ruff check .
-uv run python -c "import config; print(config.load_config())"
-```
-
-Runtime dependencies must be installed into Hermes's Python environment, not
-only this repo's dev venv:
-
-```sh
-uv pip install --python /path/to/hermes/python lancedb sentence-transformers
-```
-
-For local development, add dev-only dependencies here:
-
-```sh
-uv add --dev pytest-mock
-```
+If `maintenance.enabled: false`, none of this runs and the dataset will grow without bound.
 
 ---
 
-## Status
+## Troubleshooting
 
-v0.1 in active development. See
-[`scratch/brainstorming/plan-v0.1.html`](scratch/brainstorming/plan-v0.1.html)
-for the full build plan.
+**`hermes plugins list` doesn't show `lancedb`.** Check the symlink: `ls -l ~/.hermes/plugins/lancedb` should resolve to this repo (or wherever you installed it).
 
-| Phase | Description | Status |
-|---|---|---|
-| 1 | Skeleton + registration | ✅ done |
-| 2 | Setup wizard installs deps + activates provider | ✅ done |
-| 3 | LanceDB write path for turns and explicit facts | ✅ done |
-| 4 | Recall path — hybrid / vector / fts over workspace facts | ✅ done |
-| 5 | `lancedb_remember`, `lancedb_read`, transparent `lancedb_forget` | ✅ done |
-| 6 | LLM extraction with provenance turn IDs + short abstracts | ✅ done |
-| 7 | Cross-encoder reranker (`cross-encoder/ettin-reranker-32m-v1`, opt-in) | ✅ wired, opt-in |
-| 8 | Tests + working agent-loop smoke test | ✅ local smoke |
-| 9 | Publish + announce | pending |
+**`lancedb_*` tools missing from the agent.** Confirm `memory.provider: lancedb` in `~/.hermes/config.yaml` and that `agent.log` contains `lancedb provider initialized` on session start.
 
----
+**First recall hangs for 1–2 seconds.** First-time model load. After the embedding model (and, if enabled, the cross-encoder) are cached in `~/.cache/huggingface/`, subsequent runs are fast. With `reranker.type: cross-encoder`, the reranker is preloaded during `initialize()` to avoid this on the first user query.
 
-## v0.1 design priorities
+**Table fragments / `.lance` directory growing.** Check `maintenance.enabled: true` and that `~/.hermes/lancedb/.last_optimize_version` is advancing across sessions. `agent.log` will show `lancedb optimize starting` when a compaction fires.
 
-- Install plugin, run one setup command, start chatting.
-- Keep memory workspace-contained by default.
-- Recall durable facts first; use raw turns only as provenance or fallback.
-- Make forget operations transparent: preview candidates, then delete by ID.
-- Keep embeddings local through Sentence Transformers.
+**Changed `embedding.model` and recall returns nothing.** The new model's dim doesn't match the existing column. Delete `~/.hermes/lancedb/memories.lance/` to recreate the table on the next session.
 
 ---
 
