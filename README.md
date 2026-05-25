@@ -47,36 +47,30 @@ hermes setup            # interactive: .env, API key, model picker
 hermes doctor           # final sanity check
 ```
 
+> [!NOTE]
 > If you have AWS credentials in your shell environment, `hermes doctor` may log a Bedrock `AccessDeniedException`. This is Hermes's provider auto-detection and is ignorable if you're using OpenAI / Anthropic / OpenRouter.
 
 ### 2. Install the plugin
-
-Once published:
 
 ```sh
 hermes plugins install lancedb/hermes-agent-memory
 ```
 
-Until then, or if you want a local copy:
-
-```sh
-git clone https://github.com/lancedb/hermes-agent-memory ~/code/hermes-agent-memory
-ln -sf ~/code/hermes-agent-memory ~/.hermes/plugins/lancedb
-```
+This shallow-clones `https://github.com/lancedb/hermes-agent-memory.git` into `~/.hermes/plugins/lancedb/` and renders `after-install.md` in a Rich panel telling you what's next. To pull updates later, re-run the same command.
 
 ### 3. Install runtime dependencies into Hermes's venv
 
 Hermes loads plugins inside its own Python interpreter. Install `lancedb` and `sentence-transformers` *there* — not into a separate venv.
 
 ```sh
-# If Hermes is at a source checkout in ~/code/hermes-agent
-uv pip install --python ~/code/hermes-agent/venv/bin/python3 lancedb sentence-transformers
+# If Hermes is at a source checkout in /path/to/your/hermes-agent
+uv pip install --python /path/to/your/hermes-agent/venv/bin/python3 lancedb sentence-transformers
 
 # If you used the one-line installer
 uv pip install --python ~/.hermes/hermes-agent/venv/bin/python3 lancedb sentence-transformers
 ```
 
-This step is deliberately manual. `hermes memory setup` does not install these packages: `sentence-transformers` can exceed the setup-time install budget.
+This step is deliberately manual because in certain cases, `hermes memory setup` fails to install these packages: `sentence-transformers` can exceed the setup-time install budget of 120s due to its torch dependency.
 
 ### 4. Activate the provider
 
@@ -86,6 +80,11 @@ hermes memory setup
 ```
 
 This writes `memory.provider: lancedb` into `~/.hermes/config.yaml`, writes the plugin defaults under `plugins.lancedb`, and warms `BAAI/bge-small-en-v1.5` (~133 MB) into `~/.cache/huggingface/` so the first chat doesn't hang on a model download.
+
+```sh
+# ✓ LanceDB memory configured (embedding dim: 384)
+#  Start a new session to activate.
+```
 
 ### 5. Verify
 
@@ -104,27 +103,27 @@ Use this section if you're working on the plugin's source.
 ### 1. Clone and create the dev venv
 
 ```sh
-git clone https://github.com/lancedb/hermes-agent-memory ~/code/hermes-agent-memory
-cd ~/code/hermes-agent-memory
+git clone https://github.com/lancedb/hermes-agent-memory /path/to/your/hermes-agent-memory
+cd /path/to/your/hermes-agent-memory
 uv sync --extra dev
 ```
 
-`pyproject.toml` sets `[tool.uv] package = false` — `uv sync` only manages a venv for tests, lint, and ad-hoc imports. The plugin itself is loaded by Hermes from its directory, not pip-installed.
+`pyproject.toml` sets `[tool.uv] package = false` − `uv sync` only manages a venv for tests, lint, and ad-hoc imports. The plugin itself is loaded by Hermes from its directory, not pip-installed.
 
 ### 2. Symlink into Hermes's plugins directory
 
 ```sh
-ln -sf ~/code/hermes-agent-memory ~/.hermes/plugins/lancedb
+ln -sf /path/to/your/hermes-agent-memory ~/.hermes/plugins/lancedb
 ```
 
-Edits to source files are picked up on the next Hermes session — no reinstall.
+Edits to source files are picked up on the next Hermes session: no reinstall.
 
 ### 3. Install runtime deps into Hermes's venv
 
 The dev venv only runs pytest / ruff. For end-to-end testing inside Hermes itself you still need the runtime deps installed against Hermes's Python:
 
 ```sh
-uv pip install --python ~/code/hermes-agent/venv/bin/python3 lancedb sentence-transformers
+uv pip install --python /path/to/your/hermes-agent/venv/bin/python3 lancedb sentence-transformers
 ```
 
 ### 4. Tests and lint
