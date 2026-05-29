@@ -10,8 +10,10 @@ authors = [
 ]
 dependencies = [
     "lancedb>=0.13.0",
-    "sentence-transformers>=3.0.0",
     "pyyaml",
+    "openai>=2.38.0",
+    "requests>=2.34.2",
+    "botocore>=1.43.16",
 ]
 
 [project.optional-dependencies]

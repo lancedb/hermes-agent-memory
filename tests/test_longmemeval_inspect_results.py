@@ -62,7 +62,7 @@ def test_inspect_results_filters_and_formats_expected_vs_actual(tmp_path):
         },
         {
             "question_id": "q3",
-            "variant": "openviking",
+            "variant": "lancedb-vector",
             "correct": True,
             "question_type": "single-session",
             "retrieval": {"session_hit": True, "turn_hit": False},
@@ -85,7 +85,7 @@ def test_inspect_results_filters_and_formats_expected_vs_actual(tmp_path):
     assert len(filtered) == 1
     assert "## Variant Summary" in markdown
     assert "| lancedb-hybrid-rrf | 2 | 0.500 | 0.500 | 0.500 | 1.00s | 2.12s |" in markdown
-    assert "| openviking | 1 | 1.000 | 1.000 | 0.000 | 4.00s | 6.00s |" in markdown
+    assert "| lancedb-vector | 1 | 1.000 | 1.000 | 0.000 | 4.00s | 6.00s |" in markdown
     assert "## Sampled Records" in markdown
     assert "**Expected**" in markdown
     assert "Paris" in markdown

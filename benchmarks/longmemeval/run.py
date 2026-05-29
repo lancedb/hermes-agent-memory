@@ -1,4 +1,4 @@
-"""Run LongMemEval against Hermes and LanceDB memory variants."""
+"""Run LongMemEval against the LanceDB memory plugin variants."""
 from __future__ import annotations
 
 import argparse
@@ -25,18 +25,12 @@ DATASET_URL = (
     "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/"
     "longmemeval_s_cleaned.json"
 )
+# The benchmark covers only the LanceDB memory plugin retrieval modes.
 VARIANT_NAMES = (
-    "hermes-builtin-memory",
-    "hermes-holographic",
-    "openviking",
     "lancedb-vector",
     "lancedb-hybrid-rrf",
     "lancedb-hybrid-cross-encoder",
 )
-BUILTIN_MEMORY_CHAR_LIMIT = 2200
-ENTRY_DELIMITER = "\n§\n"
-HOLOGRAPHIC_BENCHMARK_HRR_DIM = 4096
-OPENVIKING_INDEX_PREFIX = "longmemeval"
 
 
 @dataclass(frozen=True)
@@ -99,7 +93,6 @@ class PreparedCaseVariant:
 
 
 _PLUGIN_MODULE: ModuleType | None = None
-_OPENVIKING_PLUGIN_MODULE: ModuleType | None = None
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -131,7 +124,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--variants",
         default=",".join(VARIANT_NAMES),
-        help="Comma-separated variants. Use 'all' for the full matrix.",
+        help=(
+            "Comma-separated variants, or 'all' for every variant. Choices: "
+            + ", ".join(VARIANT_NAMES)
+            + "."
+        ),
     )
     parser.add_argument("--answer-provider", default="", help="Explicit Hermes provider for answers.")
     parser.add_argument("--answer-model", default="", help="Explicit answer model.")
@@ -144,28 +141,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=4,
         help="Number of case/variant answer and judge LLM calls to run concurrently.",
-    )
-    parser.add_argument(
-        "--openviking-index-wait-s",
-        type=float,
-        default=900.0,
-        help="Max seconds to wait for OpenViking vectors_only reindex + queue drain during ingestion.",
-    )
-    parser.add_argument(
-        "--openviking-turns-per-doc",
-        type=int,
-        default=4,
-        help="Number of benchmark turns to pack into each OpenViking leaf document.",
-    )
-    parser.add_argument(
-        "--openviking-index-prefix",
-        default=OPENVIKING_INDEX_PREFIX,
-        help="OpenViking memory namespace prefix for deterministic benchmark indexes.",
-    )
-    parser.add_argument(
-        "--openviking-use-prebuilt-index",
-        action="store_true",
-        help="Skip OpenViking ingestion and search a prebuilt index from build_openviking_index.py.",
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--output-dir", type=Path, default=Path("benchmarks/runs/dev"))
@@ -303,15 +278,7 @@ def expand_variants(value: str | Iterable[str]) -> list[Variant]:
         names = list(VARIANT_NAMES)
     variants: list[Variant] = []
     for name in names:
-        if name == "hermes-builtin-memory":
-            variants.append(Variant(name=name, backend="hermes-builtin"))
-        elif name == "hermes-holographic":
-            variants.append(Variant(name=name, backend="holographic"))
-        elif name == "openviking":
-            variants.append(Variant(name=name, backend="openviking"))
-        elif name in {"markdown-lexical", "builtin-markdown"}:
-            variants.append(Variant(name=name, backend="markdown-lexical"))
-        elif name == "lancedb-vector":
+        if name == "lancedb-vector":
             variants.append(Variant(name=name, backend="lancedb", mode="vector"))
         elif name == "lancedb-hybrid-rrf":
             variants.append(Variant(name=name, backend="lancedb", mode="hybrid", reranker_type="rrf"))
@@ -441,56 +408,18 @@ def prepare_case_variant(
     timings: dict[str, float] = {}
     retrieval_start = time.perf_counter()
     log_progress(args, f"{progress_prefix}: ingesting and retrieving top-{args.top_k}")
-    if variant.backend == "hermes-builtin":
-        retriever = HermesBuiltinMemoryIndex(case, case_dir)
+    retriever = LanceDBCaseIndex(
+        case,
+        case_dir,
+        variant,
+        embedder=resources.embedder,
+        reranker=resources.rerankers.get(variant.reranker_type),
+    )
+    try:
         retriever.ingest()
         snippets = retriever.retrieve(case.question, limit=args.top_k)
-    elif variant.backend == "holographic":
-        retriever = HolographicCaseIndex(case, case_dir)
-        try:
-            retriever.ingest()
-            snippets = retriever.retrieve(case.question, limit=args.top_k)
-        finally:
-            retriever.close()
-    elif variant.backend == "openviking":
-        openviking_turns_per_doc = max(1, int(getattr(args, "openviking_turns_per_doc", 4) or 4))
-        retriever = OpenVikingCaseIndex(
-            case,
-            case_dir,
-            turns_per_doc=openviking_turns_per_doc,
-            index_wait_s=float(getattr(args, "openviking_index_wait_s", 900.0) or 900.0),
-            scope_name=openviking_scope_name(
-                case,
-                str(getattr(args, "openviking_index_prefix", OPENVIKING_INDEX_PREFIX) or ""),
-                openviking_turns_per_doc,
-            ),
-        )
-        try:
-            if getattr(args, "openviking_use_prebuilt_index", False):
-                log_progress(args, f"{progress_prefix}: using prebuilt OpenViking index")
-                retriever.connect()
-            else:
-                retriever.ingest()
-            snippets = retriever.retrieve(case.question, limit=args.top_k)
-        finally:
-            retriever.close()
-    elif variant.backend == "markdown-lexical":
-        retriever = MarkdownMemoryIndex(case, case_dir)
-        retriever.ingest()
-        snippets = retriever.retrieve(case.question, limit=args.top_k)
-    else:
-        retriever = LanceDBCaseIndex(
-            case,
-            case_dir,
-            variant,
-            embedder=resources.embedder,
-            reranker=resources.rerankers.get(variant.reranker_type),
-        )
-        try:
-            retriever.ingest()
-            snippets = retriever.retrieve(case.question, limit=args.top_k)
-        finally:
-            retriever.close()
+    finally:
+        retriever.close()
     timings["retrieval_s"] = time.perf_counter() - retrieval_start
     log_progress(
         args,
@@ -663,376 +592,6 @@ def build_benchmark_resources(
     return resources
 
 
-class MarkdownMemoryIndex:
-    def __init__(self, case: LongMemEvalCase, root: Path) -> None:
-        self.case = case
-        self.root = root / "markdown-memory"
-        self.docs: list[RetrievedSnippet] = []
-
-    def ingest(self) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
-        for session_index, session in enumerate(self.case.haystack_sessions):
-            session_id = _session_id(self.case, session_index)
-            date = _session_date(self.case, session_index)
-            lines = [f"# Session {session_id}", "", f"Date: {date}", ""]
-            for turn_index, turn in enumerate(session):
-                role = turn.get("role") or ""
-                content = turn.get("content") or ""
-                turn_id = make_benchmark_turn_id(session_id, turn_index, role, content)
-                lines.extend([f"## {turn_index}. {role}", "", content, ""])
-                self.docs.append(
-                    RetrievedSnippet(
-                        id=turn_id,
-                        session_id=session_id,
-                        turn_index=turn_index,
-                        role=role,
-                        date=date,
-                        text=content,
-                    )
-                )
-            (self.root / f"{safe_name(session_id)}.md").write_text(
-                "\n".join(lines), encoding="utf-8"
-            )
-
-    def retrieve(self, query: str, *, limit: int) -> list[RetrievedSnippet]:
-        query_terms = tokenize(query)
-        scored = []
-        for doc in self.docs:
-            score = lexical_score(query_terms, doc.text)
-            scored.append((score, doc))
-        scored.sort(key=lambda item: (-item[0], item[1].session_id, item[1].turn_index))
-        return [
-            RetrievedSnippet(**{**snippet_to_dict(doc), "score": float(score)})
-            for score, doc in scored[: max(1, limit)]
-        ]
-
-
-class HermesBuiltinMemoryIndex:
-    """No-index baseline matching Hermes's file-backed prompt memory shape."""
-
-    def __init__(self, case: LongMemEvalCase, root: Path) -> None:
-        self.case = case
-        self.root = root / "hermes-builtin-memory"
-        self.docs: list[RetrievedSnippet] = []
-
-    def ingest(self) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
-        memory_dir = self.root / "memories"
-        memory_dir.mkdir(parents=True, exist_ok=True)
-        entries = []
-        for session_index, session in enumerate(self.case.haystack_sessions):
-            session_id = _session_id(self.case, session_index)
-            date = _session_date(self.case, session_index)
-            for turn_index, turn in enumerate(session):
-                role = turn.get("role") or ""
-                content = turn.get("content") or ""
-                entry = format_turn_content(date, session_id, turn_index, role, content)
-                next_entries = entries + [entry]
-                if len(ENTRY_DELIMITER.join(next_entries)) > BUILTIN_MEMORY_CHAR_LIMIT:
-                    (memory_dir / "MEMORY.md").write_text(
-                        ENTRY_DELIMITER.join(entries),
-                        encoding="utf-8",
-                    )
-                    return
-                entries.append(entry)
-                self.docs.append(
-                    RetrievedSnippet(
-                        id=make_benchmark_turn_id(session_id, turn_index, role, content),
-                        session_id=session_id,
-                        turn_index=turn_index,
-                        role=role,
-                        date=date,
-                        text=entry,
-                    )
-                )
-        (memory_dir / "MEMORY.md").write_text(ENTRY_DELIMITER.join(entries), encoding="utf-8")
-
-    def retrieve(self, query: str, *, limit: int) -> list[RetrievedSnippet]:
-        del query, limit
-        return list(self.docs)
-
-
-class HolographicCaseIndex:
-    def __init__(self, case: LongMemEvalCase, root: Path) -> None:
-        self.case = case
-        self.root = root / "holographic-memory"
-        self.provider = None
-
-    def ingest(self) -> None:
-        plugin = load_holographic_plugin()
-        provider = plugin.HolographicMemoryProvider(
-            config={
-                "db_path": str(self.root / "memory_store.db"),
-                "auto_extract": False,
-                "default_trust": 0.5,
-                "hrr_dim": HOLOGRAPHIC_BENCHMARK_HRR_DIM,
-                "hrr_weight": 0.3,
-                "min_trust_threshold": 0.0,
-            }
-        )
-        self.root.mkdir(parents=True, exist_ok=True)
-        provider.initialize(f"longmemeval-{self.case.question_id}")
-        for session_index, session in enumerate(self.case.haystack_sessions):
-            session_id = _session_id(self.case, session_index)
-            date = _session_date(self.case, session_index)
-            for turn_index, turn in enumerate(session):
-                role = turn.get("role") or ""
-                content = turn.get("content") or ""
-                provider._store.add_fact(
-                    format_turn_content(date, session_id, turn_index, role, content),
-                    category="turn",
-                    tags="longmemeval",
-                )
-        self.provider = provider
-
-    def retrieve(self, query: str, *, limit: int) -> list[RetrievedSnippet]:
-        fts_query = holographic_fts_query(query) or query
-        rows = self.provider._retriever.search(
-            fts_query,
-            category="turn",
-            min_trust=0.0,
-            limit=limit,
-        )
-        snippets = []
-        for row in rows:
-            content = str(row.get("content") or "")
-            parsed = parse_turn_content(content)
-            snippets.append(
-                RetrievedSnippet(
-                    id=make_benchmark_turn_id(
-                        parsed["session_id"],
-                        parsed["turn_index"],
-                        parsed["role"],
-                        parsed["content"],
-                    ),
-                    session_id=parsed["session_id"],
-                    turn_index=parsed["turn_index"],
-                    role=parsed["role"],
-                    date=parsed["date"],
-                    text=content,
-                    score=float(row.get("score") or 0.0),
-                )
-            )
-        return snippets
-
-    def close(self) -> None:
-        if self.provider is not None:
-            self.provider.shutdown()
-
-
-class OpenVikingCaseIndex:
-    """Mode A (raw-turn leaf retrieval) OpenViking adapter for LongMemEval.
-
-    OpenViking's session/extract memory pipeline is lossy by design and drops the
-    specific facts LongMemEval asks about, so it cannot answer the benchmark. This
-    adapter instead stores the raw conversation turns as leaf documents in an
-    isolated per-case scope and retrieves them directly, which is apples-to-apples
-    with the flat LanceDB variants.
-
-    The critical step is ``content/reindex`` with ``mode=vectors_only``: plain
-    ``content/write`` only embeds the rolled-up directory abstract, so a scoped
-    ``search/find`` returns just that summary and never the answer turn. Reindexing
-    forces per-leaf vector embeddings (no LLM cost), after which a scoped
-    ``search/find`` returns the leaf chunks. Isolation is by ``target_uri`` scope;
-    no global store wipe is required.
-    """
-
-    def __init__(
-        self,
-        case: LongMemEvalCase,
-        root: Path,
-        *,
-        wait_every_write: bool = False,
-        turns_per_doc: int = 4,
-        scope_name: str = "",
-        index_wait_s: float = 900.0,
-    ) -> None:
-        self.case = case
-        self.root = root / "openviking-memory"
-        self.provider = None
-        self.scope = ""
-        # Retained for call-site compatibility; ingestion no longer waits per write.
-        self.wait_every_write = wait_every_write
-        self.turns_per_doc = max(1, turns_per_doc)
-        self.index_wait_s = max(60.0, index_wait_s)
-        self.scope_name = scope_name or openviking_scope_name(
-            case,
-            OPENVIKING_INDEX_PREFIX,
-            self.turns_per_doc,
-        )
-
-    def connect(self) -> Any:
-        plugin = load_openviking_plugin()
-        provider = plugin.OpenVikingMemoryProvider()
-        provider.initialize(f"longmemeval-{self.case.question_id}")
-        if getattr(provider, "_client", None) is None:
-            raise RuntimeError(
-                "OpenViking benchmark requires a reachable OpenViking server. "
-                "Start openviking-server, set OPENVIKING_ENDPOINT if it is not "
-                "http://127.0.0.1:1933, then rerun or omit --variants openviking."
-            )
-
-        user = str(getattr(provider, "_user", "") or "default")
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.scope = f"viking://user/{user}/memories/{self.scope_name}/"
-        self.provider = provider
-        return provider
-
-    def _long_request(self, method: str, path: str, *, json_body: dict | None = None,
-                      params: dict | None = None, timeout: float) -> Any:
-        """Issue a request that may exceed the plugin client's 30s default timeout.
-
-        The plugin's ``_VikingClient`` hardcodes a 30s timeout and forwards no
-        override, but reindex and system/wait can run longer, so call httpx
-        directly while reusing the client's URL/header/parse helpers.
-        """
-        client = self.provider._client
-        resp = client._httpx.request(
-            method,
-            client._url(path),
-            json=json_body,
-            params=params,
-            headers=client._headers(),
-            timeout=timeout,
-        )
-        return client._parse_response(resp)
-
-    def _delete_scope(self) -> None:
-        """Remove any prior contents of this case's scope for idempotent re-runs."""
-        try:
-            self._long_request(
-                "DELETE",
-                "/api/v1/fs",
-                params={"uri": self.scope, "recursive": "true"},
-                timeout=120.0,
-            )
-        except Exception:
-            pass
-
-    def ingest(self) -> None:
-        provider = self.connect()
-        self._delete_scope()
-
-        turns = []
-        for session_index, session in enumerate(self.case.haystack_sessions):
-            session_id = _session_id(self.case, session_index)
-            date = _session_date(self.case, session_index)
-            for turn_index, turn in enumerate(session):
-                role = turn.get("role") or ""
-                content = turn.get("content") or ""
-                turn_id = make_benchmark_turn_id(session_id, turn_index, role, content)
-                formatted = format_turn_content(date, session_id, turn_index, role, content)
-                turns.append((formatted, turn_id))
-
-        docs = []
-        for start_index in range(0, len(turns), self.turns_per_doc):
-            chunk = turns[start_index : start_index + self.turns_per_doc]
-            doc_index = (start_index // self.turns_per_doc) + 1
-            uri = f"{self.scope}chunk_{doc_index:04d}.md"
-            content = ENTRY_DELIMITER.join(formatted for formatted, _ in chunk)
-            docs.append((uri, content, chunk[0][1]))
-
-        # Write all docs without waiting (fast); content is stored synchronously.
-        for uri, content, turn_id in docs:
-            self._write_doc(provider, uri, content, turn_id)
-
-        # Force per-leaf vector embeddings so scoped search returns leaf chunks
-        # rather than only the directory abstract. reindex(wait=True) blocks until
-        # the vectors are rebuilt and committed, which is all leaf retrieval needs.
-        #
-        # We deliberately do NOT call /system/wait here: that also blocks on the
-        # Semantic queue, which generates directory abstracts/overviews via a VLM
-        # (gpt-5.4-mini) — work this benchmark never reads. Waiting on it roughly
-        # tripled per-case ingest time for no retrieval benefit. Those summaries
-        # still run in the background per write; they are simply not awaited.
-        self._long_request(
-            "POST",
-            "/api/v1/content/reindex",
-            json_body={"uri": self.scope, "mode": "vectors_only", "wait": True},
-            timeout=self.index_wait_s,
-        )
-
-    def _write_doc(self, provider: Any, uri: str, content: str, turn_id: str) -> Any:
-        payload = {"uri": uri, "content": content, "mode": "create", "wait": False}
-        try:
-            return provider._client.post("/api/v1/content/write", payload)
-        except Exception as exc:
-            if not is_openviking_already_exists(exc):
-                raise RuntimeError(f"OpenViking failed to store benchmark chunk {turn_id}: {exc}") from exc
-
-        payload["mode"] = "replace"
-        try:
-            return provider._client.post("/api/v1/content/write", payload)
-        except Exception as exc:
-            raise RuntimeError(
-                f"OpenViking failed to overwrite existing benchmark chunk {turn_id}: {exc}"
-            ) from exc
-
-    def retrieve(self, query: str, *, limit: int) -> list[RetrievedSnippet]:
-        payload = self.provider._client.post(
-            "/api/v1/search/find",
-            {
-                "query": query,
-                "target_uri": self.scope,
-                "limit": max(1, limit),
-            },
-        )
-        hits = extract_openviking_hits(payload)
-        snippets: list[RetrievedSnippet] = []
-        seen_docs: set[str] = set()
-        for rank, item in enumerate(hits, start=1):
-            uri = str(item.get("uri") or "")
-            # Search hits may address sub-chunks (chunk_0007.md#chunk_0002); read
-            # the parent leaf document once to recover its Session:/Turn: lines.
-            doc_uri = uri.split("#", 1)[0]
-            if doc_uri and doc_uri in seen_docs:
-                continue
-            if doc_uri:
-                seen_docs.add(doc_uri)
-            content = self._read_content(doc_uri)
-            if not content:
-                content = str(
-                    item.get("content")
-                    or item.get("text")
-                    or item.get("abstract")
-                    or item.get("summary")
-                    or ""
-                )
-            snippets.extend(
-                openviking_snippets_from_content(
-                    content,
-                    query=query,
-                    source_id=doc_uri or f"openviking-{rank}",
-                    base_score=safe_float(item.get("score")),
-                )
-            )
-            if len(snippets) >= limit:
-                break
-        return snippets[: max(1, limit)]
-
-    def _read_content(self, uri: str) -> str:
-        if not uri:
-            return ""
-        uri = uri.split("#", 1)[0]
-        try:
-            payload = self.provider._client.get(
-                "/api/v1/content/read",
-                params={"uri": uri, "raw": True},
-            )
-        except Exception:
-            return ""
-        result = payload.get("result", payload) if isinstance(payload, dict) else payload
-        if isinstance(result, str):
-            return result
-        if isinstance(result, dict):
-            return str(result.get("content") or result.get("text") or "")
-        return ""
-
-    def close(self) -> None:
-        if self.provider is not None:
-            self.provider.shutdown()
-
-
 class LanceDBCaseIndex:
     def __init__(
         self,
@@ -1140,48 +699,6 @@ def load_lancedb_plugin() -> ModuleType:
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     _PLUGIN_MODULE = module
-    return module
-
-
-def load_holographic_plugin() -> ModuleType:
-    root = Path(__file__).resolve().parents[2]
-    hermes_agent = root.parent / "hermes-agent"
-    ensure_hermes_agent_path(hermes_agent)
-    module_name = "hermes_holographic_benchmark_plugin"
-    plugin_root = hermes_agent / "plugins" / "memory" / "holographic"
-    spec = importlib.util.spec_from_file_location(
-        module_name,
-        plugin_root / "__init__.py",
-        submodule_search_locations=[str(plugin_root)],
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Could not load Holographic plugin from {plugin_root}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def load_openviking_plugin() -> ModuleType:
-    global _OPENVIKING_PLUGIN_MODULE
-    if _OPENVIKING_PLUGIN_MODULE is not None:
-        return _OPENVIKING_PLUGIN_MODULE
-    root = Path(__file__).resolve().parents[2]
-    hermes_agent = root.parent / "hermes-agent"
-    ensure_hermes_agent_path(hermes_agent)
-    module_name = "hermes_openviking_benchmark_plugin"
-    plugin_root = hermes_agent / "plugins" / "memory" / "openviking"
-    spec = importlib.util.spec_from_file_location(
-        module_name,
-        plugin_root / "__init__.py",
-        submodule_search_locations=[str(plugin_root)],
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Could not load OpenViking plugin from {plugin_root}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    _OPENVIKING_PLUGIN_MODULE = module
     return module
 
 
@@ -1571,88 +1088,6 @@ def parse_tool_json(raw: str, context: str) -> dict[str, Any]:
     return payload
 
 
-def extract_openviking_hits(payload: Any) -> list[dict[str, Any]]:
-    """Extract URI-bearing search hits from multiple OpenViking response shapes."""
-    root = payload.get("result", payload) if isinstance(payload, dict) else payload
-    hits: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    def visit(value: Any) -> None:
-        if isinstance(value, dict):
-            uri = value.get("uri")
-            if isinstance(uri, str) and uri.startswith("viking://") and uri not in seen:
-                seen.add(uri)
-                hits.append(value)
-            for child in value.values():
-                visit(child)
-        elif isinstance(value, list):
-            for child in value:
-                visit(child)
-
-    visit(root)
-
-    def sort_key(item: dict[str, Any]) -> float:
-        score = safe_float(item.get("score"))
-        return score if score is not None else float("-inf")
-
-    if any(safe_float(item.get("score")) is not None for item in hits):
-        hits.sort(key=sort_key, reverse=True)
-    return hits
-
-
-def openviking_scope_name(case: LongMemEvalCase, prefix: str, turns_per_doc: int) -> str:
-    return safe_name(f"{prefix or OPENVIKING_INDEX_PREFIX}-tpd{max(1, turns_per_doc)}-{case.question_id}")
-
-
-def openviking_snippets_from_content(
-    content: str,
-    *,
-    query: str,
-    source_id: str,
-    base_score: float | None,
-) -> list[RetrievedSnippet]:
-    parts = [part.strip() for part in (content or "").split(ENTRY_DELIMITER) if part.strip()]
-    if not parts and content:
-        parts = [content]
-    query_terms = tokenize(query)
-    ranked: list[tuple[float, RetrievedSnippet]] = []
-    for index, part in enumerate(parts, start=1):
-        parsed = parse_turn_content(part)
-        turn_text = parsed["content"] or part
-        local_score = lexical_score(query_terms, part)
-        score = (base_score if base_score is not None else 0.0) + (local_score / 1000.0)
-        if parsed["session_id"]:
-            snippet_id = make_benchmark_turn_id(
-                parsed["session_id"],
-                parsed["turn_index"],
-                parsed["role"],
-                turn_text,
-            )
-        else:
-            snippet_id = f"{source_id}#{index}"
-        ranked.append(
-            (
-                local_score,
-                RetrievedSnippet(
-                    id=snippet_id,
-                    session_id=parsed["session_id"],
-                    turn_index=parsed["turn_index"],
-                    role=parsed["role"],
-                    date=parsed["date"],
-                    text=part,
-                    score=score,
-                ),
-            )
-        )
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    return [snippet for _, snippet in ranked]
-
-
-def is_openviking_already_exists(exc: Exception) -> bool:
-    message = str(exc)
-    return "ALREADY_EXISTS" in message or "File already exists" in message
-
-
 def format_turn_content(date: str, session_id: str, turn_index: int, role: str, content: str) -> str:
     return (
         f"Date: {date}\n"
@@ -1661,37 +1096,6 @@ def format_turn_content(date: str, session_id: str, turn_index: int, role: str, 
         f"Role: {role}\n"
         f"Content: {content}"
     )
-
-
-def parse_turn_content(content: str) -> dict[str, Any]:
-    fields: dict[str, Any] = {
-        "date": "",
-        "session_id": "",
-        "turn_index": 0,
-        "role": "",
-        "content": "",
-    }
-    current = None
-    body_lines = []
-    for line in (content or "").splitlines():
-        if line.startswith("Date: "):
-            fields["date"] = line.removeprefix("Date: ").strip()
-        elif line.startswith("Session: "):
-            fields["session_id"] = line.removeprefix("Session: ").strip()
-        elif line.startswith("Turn: "):
-            try:
-                fields["turn_index"] = int(line.removeprefix("Turn: ").strip())
-            except ValueError:
-                fields["turn_index"] = 0
-        elif line.startswith("Role: "):
-            fields["role"] = line.removeprefix("Role: ").strip()
-        elif line.startswith("Content: "):
-            current = "content"
-            body_lines.append(line.removeprefix("Content: "))
-        elif current == "content":
-            body_lines.append(line)
-    fields["content"] = "\n".join(body_lines).strip()
-    return fields
 
 
 def extract_turn_date(content: str) -> str:
@@ -1704,77 +1108,6 @@ def make_benchmark_turn_id(session_id: str, turn_index: int, role: str, content:
         f"{session_id}\0{turn_index}\0{role}\0{content}".encode("utf-8")
     ).hexdigest()[:24]
     return f"turn_lme_{digest}"
-
-
-def tokenize(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", (text or "").lower())
-
-
-HOLOGRAPHIC_QUERY_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "did",
-    "do",
-    "does",
-    "for",
-    "from",
-    "had",
-    "has",
-    "have",
-    "how",
-    "i",
-    "in",
-    "is",
-    "it",
-    "me",
-    "my",
-    "of",
-    "on",
-    "or",
-    "the",
-    "to",
-    "was",
-    "were",
-    "what",
-    "when",
-    "where",
-    "which",
-    "who",
-    "whom",
-    "why",
-    "with",
-}
-
-
-def holographic_fts_query(query: str) -> str:
-    """Build a permissive FTS5 query for the holographic plugin.
-
-    The plugin passes queries directly to SQLite FTS5 MATCH. Raw natural
-    questions can be invalid FTS syntax and usually over-constrain matching.
-    """
-    terms = []
-    seen = set()
-    for token in tokenize(query):
-        if len(token) < 3 or token in HOLOGRAPHIC_QUERY_STOPWORDS:
-            continue
-        term = f"{token}*"
-        if term not in seen:
-            terms.append(term)
-            seen.add(term)
-    return " OR ".join(terms)
-
-
-def lexical_score(query_terms: list[str], text: str) -> float:
-    if not query_terms or not text:
-        return 0.0
-    counts = Counter(tokenize(text))
-    score = 0.0
-    for term in query_terms:
-        score += counts.get(term, 0)
-    unique_overlap = len(set(query_terms).intersection(counts))
-    return score + (unique_overlap * 2.0)
 
 
 def safe_name(value: str) -> str:
