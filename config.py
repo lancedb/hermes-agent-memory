@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULTS: Dict[str, Any] = {
     "embedding": {
-        "provider": "sentence-transformers",
-        "model": "BAAI/bge-small-en-v1.5",
+        "provider": "openai",
+        "model": "text-embedding-3-small",
+        "dimension": 1536,
     },
     "retrieval": {
         "mode": "hybrid",            # "hybrid" | "vector" | "fts"
@@ -27,7 +28,7 @@ DEFAULTS: Dict[str, Any] = {
             #                   hybrid mode (no-op for mode=vector/fts, which
             #                   return vector-distance / BM25 order natively).
             # "cross-encoder" — replace RRF / native ordering with a
-            #                   sentence-transformers cross-encoder.
+            #                   LanceDB reranker.
             "type": "rrf",
             "model": "cross-encoder/ettin-reranker-32m-v1",
             # Cross-encoder only: pull this many candidates from the base

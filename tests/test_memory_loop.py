@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -122,6 +123,74 @@ def test_auto_compaction_runs_after_threshold(tmp_path):
 
     assert sentinel.exists(), "auto-compaction sentinel file not written"
     assert int(sentinel.read_text()) >= 5
+
+
+def test_openai_embedder_normalizes_vectors_without_network_client():
+    plugin = _load_plugin()
+    embeddings_mod = importlib.import_module(f"{plugin.__name__}.embeddings")
+
+    class FakeEmbedding:
+        def __init__(self, index, embedding):
+            self.index = index
+            self.embedding = embedding
+
+    class FakeEmbeddingsClient:
+        def create(self, **kwargs):
+            assert kwargs["model"] == "text-embedding-3-small"
+            assert kwargs["dimensions"] == 1536
+            return type(
+                "Response",
+                (),
+                {"data": [FakeEmbedding(0, [3.0, 4.0]), FakeEmbedding(1, [0.0, 2.0])]},
+            )()
+
+    class FakeClient:
+        embeddings = FakeEmbeddingsClient()
+
+    embedder = embeddings_mod.OpenAIEmbedder("text-embedding-3-small")
+    embedder._client = FakeClient()
+
+    assert embedder.dim == 1536
+    assert embedder.embed(["a", "b"]) == [[0.6, 0.8], [0.0, 1.0]]
+
+
+def test_legacy_sentence_transformers_config_migrates_to_openai():
+    plugin = _load_plugin()
+    embeddings_mod = importlib.import_module(f"{plugin.__name__}.embeddings")
+
+    embedder = embeddings_mod.create_embedder(
+        {
+            "provider": "sentence-transformers",
+            "model": "BAAI/bge-small-en-v1.5",
+        }
+    )
+
+    assert embedder.model_name == "text-embedding-3-small"
+    assert embedder.dim == 1536
+
+
+def test_load_env_file_reads_openai_key_without_overriding_existing(tmp_path, monkeypatch):
+    plugin = _load_plugin()
+    embeddings_mod = importlib.import_module(f"{plugin.__name__}.embeddings")
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "# ignored",
+                "OPENAI_API_KEY=from-file",
+                "export OPENAI_BASE_URL=\"http://localhost:9999/v1\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "already-set")
+
+    embeddings_mod.load_env_file(env_path)
+
+    assert os.environ["OPENAI_API_KEY"] == "from-file"
+    assert os.environ["OPENAI_BASE_URL"] == "already-set"
 
 
 def test_reranker_cached_and_fetches_rerank_top_n(tmp_path, monkeypatch):
