@@ -2,7 +2,7 @@
 
 LanceDB-backed memory provider plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
-Embeds a workspace-scoped LanceDB table at `~/.hermes/lancedb/memories.lance` and exposes four tools to the agent: `lancedb_recall`, `lancedb_remember`, `lancedb_read`, `lancedb_forget`. Recall is hybrid (vector ANN + BM25, fused via RRF) with an optional Sentence Transformers cross-encoder reranker. Durable facts are extracted from sessions at pre-compress and session end. Everything runs in Hermes's Python process — no external service, no server.
+Embeds a workspace-scoped LanceDB table at `~/.hermes/lancedb/memories.lance` and exposes four tools to the agent: `lancedb_recall`, `lancedb_remember`, `lancedb_read`, `lancedb_forget`. Recall is hybrid (vector ANN + BM25, fused via RRF) with an optional cross-encoder reranker. Durable facts are extracted from sessions at pre-compress and session end. Everything runs in Hermes's Python process — no memory server.
 
 ## Features
 
@@ -21,7 +21,7 @@ Embeds a workspace-scoped LanceDB table at `~/.hermes/lancedb/memories.lance` an
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed locally
 - An LLM API key (OpenAI, OpenRouter, Anthropic, …)
 
-Runtime dependencies installed into Hermes's venv: `lancedb >= 0.13`, `sentence-transformers >= 3.0`, `pyyaml`.
+Runtime dependencies installed into Hermes's venv: `lancedb >= 0.13`, `openai >= 2.38`, `pyyaml`.
 
 ---
 
@@ -60,17 +60,17 @@ This shallow-clones `https://github.com/lancedb/hermes-agent-memory.git` into `~
 
 ### 3. Install runtime dependencies into Hermes's venv
 
-Hermes loads plugins inside its own Python interpreter. Install `lancedb` and `sentence-transformers` *there* — not into a separate venv.
+Hermes loads plugins inside its own Python interpreter. Install `lancedb`, `openai`, and `pyyaml` *there* — not into a separate venv.
 
 ```sh
 # If Hermes is at a source checkout in /path/to/your/hermes-agent
-uv pip install --python /path/to/your/hermes-agent/venv/bin/python3 lancedb sentence-transformers
+uv pip install --python /path/to/your/hermes-agent/venv/bin/python3 lancedb openai pyyaml
 
 # If you used the one-line installer
-uv pip install --python ~/.hermes/hermes-agent/venv/bin/python3 lancedb sentence-transformers
+uv pip install --python ~/.hermes/hermes-agent/venv/bin/python3 lancedb openai pyyaml
 ```
 
-This step is deliberately manual because in certain cases, `hermes memory setup` fails to install these packages: `sentence-transformers` can exceed the setup-time install budget of 120s due to its torch dependency.
+This step is deliberately manual so the packages land in the same Python environment that Hermes uses to load memory plugins.
 
 ### 4. Activate the provider
 
@@ -79,10 +79,10 @@ hermes memory setup
 # pick "lancedb"
 ```
 
-This writes `memory.provider: lancedb` into `~/.hermes/config.yaml`, writes the plugin defaults under `plugins.lancedb`, and warms `BAAI/bge-small-en-v1.5` (~133 MB) into `~/.cache/huggingface/` so the first chat doesn't hang on a model download.
+This writes `memory.provider: lancedb` into `~/.hermes/config.yaml` and writes the plugin defaults under `plugins.lancedb`. The default embedding model is OpenAI `text-embedding-3-small`; the plugin reads `OPENAI_API_KEY` from the process environment, repo `.env`, or `~/.hermes/.env`.
 
 ```sh
-# ✓ LanceDB memory configured (embedding dim: 384)
+# ✓ LanceDB memory configured (embedding dim: 1536)
 #  Start a new session to activate.
 ```
 
@@ -123,7 +123,7 @@ Edits to source files are picked up on the next Hermes session: no reinstall.
 The dev venv only runs pytest / ruff. For end-to-end testing inside Hermes itself you still need the runtime deps installed against Hermes's Python:
 
 ```sh
-uv pip install --python /path/to/your/hermes-agent/venv/bin/python3 lancedb sentence-transformers
+uv pip install --python /path/to/your/hermes-agent/venv/bin/python3 lancedb openai pyyaml
 ```
 
 ### 4. Tests and lint
@@ -160,7 +160,7 @@ The provider's system-prompt block instructs the model when to use each tool: `l
 2. A `WHERE` filter is built on workspace + user + kind + category, quoted via `quote_sql`, and passed as a prefilter.
 3. The base retriever depends on `mode`:
    - `hybrid`: vector ANN + BM25, fused by LanceDB's built-in RRF.
-   - `vector`: ANN over the `vector` column (normalized sentence-transformers embeddings).
+   - `vector`: ANN over the `vector` column (normalized OpenAI embeddings).
    - `fts`: BM25 over the `content` column.
 4. If `reranker.type` is `cross-encoder`, the candidate pool is expanded to `rerank_top_n`, the cross-encoder reorders the pool, and the top `top_k` are sliced in Python. The reranker instance is cached on the provider and warmed at `initialize()` so the first query doesn't pay the model-load cost.
 5. The per-mode score column (`_distance`, `_score`, or `_relevance_score`) is explicitly projected to silence LanceDB's auto-projection deprecation warning and to keep score metadata in tool responses.
@@ -187,7 +187,7 @@ plugins:
                                 #                   No-op for vector/fts (native distance
                                 #                   / BM25 order applies).
                                 #   cross-encoder: replace RRF / native ordering with a
-                                #                   sentence-transformers cross-encoder.
+                                #                   LanceDB reranker.
         model: cross-encoder/ettin-reranker-32m-v1
         rerank_top_n: 50        # cross-encoder only: pull this many candidates from the
                                 # base retriever, rerank, then slice to top_k. Larger =
@@ -196,8 +196,9 @@ plugins:
       enabled: true             # set false to disable LLM extraction at session boundaries
       min_turns: 3              # skip extraction for very short sessions
     embedding:
-      provider: sentence-transformers
-      model: BAAI/bge-small-en-v1.5
+      provider: openai
+      model: text-embedding-3-small
+      dimension: 1536
     maintenance:
       enabled: true             # background optimize() of the Lance table
       optimize_every_commits: 50
@@ -215,12 +216,13 @@ plugins:
 | | `top_k` | `10` | Hard cap inside the retrieval layer is 50. |
 | | `search_kinds` | `[fact]` | Recall surfaces facts; turn rows are stored as provenance and used as fallback when no facts match. |
 | `retrieval.reranker` | `type` | `rrf` | `rrf` is a no-op for `mode: vector` / `mode: fts`: there's only one ranked list to return. |
-| | `model` | `cross-encoder/ettin-reranker-32m-v1` | Any HuggingFace cross-encoder ID; lazy-loaded on first use. |
+| | `model` | `cross-encoder/ettin-reranker-32m-v1` | Reranker model passed to LanceDB's cross-encoder reranker; lazy-loaded on first use. |
 | | `rerank_top_n` | `50` | Enforced as `max(rerank_top_n, top_k)` so you never fetch fewer than you return. |
 | `extraction` | `enabled` | `true` | Set `false` to skip the auxiliary LLM call. |
 | | `min_turns` | `3` | Skip extraction when the user has spoken fewer than N turns. |
-| `embedding` | `provider` | `sentence-transformers` | Only sentence-transformers is wired today. |
-| | `model` | `BAAI/bge-small-en-v1.5` | Embedding dim must match the existing table: recreate the table if you change models against an existing store. |
+| `embedding` | `provider` | `openai` | Uses OpenAI-compatible embeddings. |
+| | `model` | `text-embedding-3-small` | Embedding dim must match the existing table: recreate the table if you change models against an existing store. |
+| | `dimension` | `1536` | Vector dimension used for the LanceDB schema. |
 | `maintenance` | `enabled` | `true` | Set `false` to disable auto-compaction. |
 | | `optimize_every_commits` | `50` | Each `add` / `delete` advances `table.version`; auto-compaction fires when delta ≥ this value. |
 | | `cleanup_older_than_days` | `7` | Passed as `timedelta(days=...)` to `table.optimize()`. Set `0` or negative to skip cleanup (compaction only). |
@@ -246,7 +248,7 @@ Hermes handles provider routing, fallback, and credit exhaustion.
 |---|---|
 | `~/.hermes/lancedb/memories.lance/` | LanceDB dataset directory (fragments, manifest, indexes). |
 | `~/.hermes/lancedb/.last_optimize_version` | Sentinel file: `table.version` at the most recent successful `optimize()`. Used to decide when the next auto-compaction fires. |
-| `~/.cache/huggingface/` | Sentence Transformers and cross-encoder model cache (managed by HuggingFace). |
+| `~/.cache/huggingface/` | Optional reranker model cache when cross-encoder reranking is enabled. |
 
 The dataset is a single table named `memories` containing both fact and turn rows; the `kind` column distinguishes them. To poke at it directly:
 
@@ -277,7 +279,7 @@ If `maintenance.enabled: false`, none of this runs and the dataset will grow wit
 
 **`lancedb_*` tools missing from the agent.** Confirm `memory.provider: lancedb` in `~/.hermes/config.yaml` and that `agent.log` contains `lancedb provider initialized` on session start.
 
-**First recall hangs for 1–2 seconds.** First-time model load. After the embedding model (and, if enabled, the cross-encoder) are cached in `~/.cache/huggingface/`, subsequent runs are fast. With `reranker.type: cross-encoder`, the reranker is preloaded during `initialize()` to avoid this on the first user query.
+**First recall hangs for 1–2 seconds.** If `reranker.type: cross-encoder` is enabled, the reranker is preloaded during `initialize()` to avoid paying that cost on the first user query. OpenAI embedding calls also add network latency.
 
 **Table fragments / `.lance` directory growing.** Check `maintenance.enabled: true` and that `~/.hermes/lancedb/.last_optimize_version` is advancing across sessions. `agent.log` will show `lancedb optimize starting` when a compaction fires.
 

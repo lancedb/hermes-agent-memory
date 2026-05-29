@@ -218,5 +218,10 @@ frontend/node_modules/
 frontend/dist/
 
 # local
+
+# Benchmark artifacts
+benchmarks/data/
+benchmarks/runs/
+benchmarks/.cache/
 scratch
 .claude

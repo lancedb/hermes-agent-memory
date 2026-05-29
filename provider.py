@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from agent.memory_provider import MemoryProvider
 
 from .config import DEFAULTS, load_config, save_plugin_config
-from .embeddings import SentenceTransformerEmbedder
+from .embeddings import create_embedder
 from .extraction import extract
 from .retrieval import format_prefetch, recall as recall_memories
 from .store import (
@@ -37,7 +37,7 @@ class LanceDBMemoryProvider(MemoryProvider):
         self._user_id: str = ""
         self._message_index: int = 0
         self._initialized: bool = False
-        self._embedder: SentenceTransformerEmbedder | None = None
+        self._embedder: Any = None
         self._reranker: Any = None
         self._store: LanceDBStore | None = None
         self._tool_dispatcher = LanceDBToolDispatcher(self)
@@ -67,14 +67,10 @@ class LanceDBMemoryProvider(MemoryProvider):
         return self._store
 
     def is_available(self) -> bool:
-        """Phase 1: verify hard dependencies are importable.
-
-        Later phases extend this to verify the Sentence Transformers model
-        cache. Per the ABC contract, this must not make network calls.
-        """
+        """Verify hard dependencies are importable without making network calls."""
         try:
             import lancedb  # noqa: F401
-            import sentence_transformers  # noqa: F401
+            import openai  # noqa: F401
         except ImportError as exc:
             logger.debug("lancedb provider not available: %s", exc)
             return False
@@ -255,7 +251,7 @@ class LanceDBMemoryProvider(MemoryProvider):
             print("\n  ⚠ LanceDB memory dependencies are not importable.")
             print(
                 "  Run manually: "
-                f"uv pip install --python {sys.executable} lancedb sentence-transformers"
+                f"uv pip install --python {sys.executable} lancedb openai pyyaml"
             )
             print("  Then re-run: hermes memory setup\n")
             return
@@ -267,7 +263,7 @@ class LanceDBMemoryProvider(MemoryProvider):
         save_plugin_config(DEFAULTS, hermes_home)
 
         try:
-            dim = SentenceTransformerEmbedder(DEFAULTS["embedding"]["model"]).warm()
+            dim = create_embedder(DEFAULTS["embedding"]).warm()
             print(f"\n  ✓ LanceDB memory configured (embedding dim: {dim})")
         except Exception as exc:
             print("\n  ✓ LanceDB memory configured")
@@ -406,10 +402,9 @@ class LanceDBMemoryProvider(MemoryProvider):
     def _should_write(self) -> bool:
         return self._agent_context not in {"cron", "subagent", "flush"}
 
-    def _get_embedder(self) -> SentenceTransformerEmbedder:
+    def _get_embedder(self) -> Any:
         if self._embedder is None:
-            model_name = self._config.get("embedding", {}).get("model", "BAAI/bge-small-en-v1.5")
-            self._embedder = SentenceTransformerEmbedder(model_name)
+            self._embedder = create_embedder(self._config.get("embedding", {}))
         return self._embedder
 
     def _get_reranker(self) -> Any:
