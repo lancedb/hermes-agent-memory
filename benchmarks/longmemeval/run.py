@@ -937,22 +937,20 @@ class OpenVikingCaseIndex:
             self._write_doc(provider, uri, content, turn_id)
 
         # Force per-leaf vector embeddings so scoped search returns leaf chunks
-        # rather than only the directory abstract, then drain the index queues.
+        # rather than only the directory abstract. reindex(wait=True) blocks until
+        # the vectors are rebuilt and committed, which is all leaf retrieval needs.
+        #
+        # We deliberately do NOT call /system/wait here: that also blocks on the
+        # Semantic queue, which generates directory abstracts/overviews via a VLM
+        # (gpt-5.4-mini) — work this benchmark never reads. Waiting on it roughly
+        # tripled per-case ingest time for no retrieval benefit. Those summaries
+        # still run in the background per write; they are simply not awaited.
         self._long_request(
             "POST",
             "/api/v1/content/reindex",
             json_body={"uri": self.scope, "mode": "vectors_only", "wait": True},
             timeout=self.index_wait_s,
         )
-        try:
-            self._long_request(
-                "POST",
-                "/api/v1/system/wait",
-                json_body={"timeout": int(self.index_wait_s)},
-                timeout=self.index_wait_s + 60.0,
-            )
-        except Exception:
-            pass
 
     def _write_doc(self, provider: Any, uri: str, content: str, turn_id: str) -> Any:
         payload = {"uri": uri, "content": content, "mode": "create", "wait": False}

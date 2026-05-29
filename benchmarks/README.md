@@ -89,6 +89,36 @@ If your server requires auth, also set `OPENVIKING_API_KEY`. If OpenViking is
 not running, omit `openviking` from `--variants`. To restart the server, stop
 the running process with `Ctrl-C` and run the same command again.
 
+### Disable VLM summarization (strongly recommended)
+
+OpenViking's leaf-retrieval path here does not use the directory abstracts /
+overviews that OpenViking generates with a VLM (`gpt-5.4-mini`) on every write.
+Leaving the VLM configured roughly triples per-case ingest time (≈100s vs ≈35s)
+and spends summarization tokens for nothing. Remove the `vlm` block from your
+OpenViking config (`~/.openviking/ov.conf`) and restart the server:
+
+```jsonc
+{
+  "storage": { "workspace": "/Users/<you>/.openviking/data" },
+  "embedding": {
+    "dense": {
+      "provider": "openai",
+      "model": "text-embedding-3-small",
+      "api_key": "${OPENAI_API_KEY}",
+      "api_base": "https://api.openai.com/v1",
+      "dimension": 1536
+    }
+  }
+  // no "vlm" block — semantic summaries no-op with "VLM not available"
+}
+```
+
+The server logs `VLM not available, using empty summary` and skips the LLM call;
+writes, vector reindex, and scoped leaf retrieval are unaffected. The
+`auto_generate_l0` / `auto_generate_l1` config flags look like they should do
+this but are unwired in OpenViking 0.3.x, so removing the `vlm` block is the
+working lever.
+
 The LanceDB benchmark variants use OpenAI `text-embedding-3-small` by default,
 matching the recommended OpenViking embedding config. The runner loads
 `OPENAI_API_KEY` from the repo `.env` or `~/.hermes/.env` when it is not already
