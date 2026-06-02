@@ -246,6 +246,7 @@ Changing the embedding model (or its dimension) against an existing store requir
 | | `base_url` | `null` | `null` = OpenAI's default endpoint. Set to any OpenAI-compatible embeddings endpoint — OpenRouter (`https://openrouter.ai/api/v1`), Nous, Together, vLLM, Ollama / LM Studio in OpenAI-compatible mode (e.g. `http://localhost:11434/v1`), or a self-hosted server. |
 | | `api_key_env` | `OPENAI_API_KEY` | Name of the environment variable holding the API key. Point it at a different var to keep your embedding key separate from `OPENAI_API_KEY`. |
 | | `dimensions` | `null` | Optional output dimensions for matryoshka models (`text-embedding-3-*`). `null` = the model's native dimension. |
+| | `max_batch` | `100` | Max inputs per embeddings request. Providers cap this differently (Gemini 100, Cohere 96, OpenAI up to 2048); the default is the safe common denominator. Lower it for a stricter provider, raise it to cut request count on OpenAI. |
 | `maintenance` | `enabled` | `true` | Set `false` to disable auto-compaction. |
 | | `optimize_every_commits` | `50` | Each `add` / `delete` advances `table.version`; auto-compaction fires when delta ≥ this value. |
 | | `cleanup_older_than_days` | `7` | Passed as `timedelta(days=...)` to `table.optimize()`. Set `0` or negative to skip cleanup (compaction only). |

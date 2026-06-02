@@ -82,6 +82,30 @@ def test_embed_one_returns_single_vector():
     assert e.embed_one("hello") == [5.0, 0.5]
 
 
+def test_default_max_batch_is_provider_safe():
+    # The default must not exceed the smallest common provider cap we claim to
+    # support out of the box (Gemini = 100). Larger batches 400 on Gemini.
+    assert emb_mod._MAX_BATCH <= 100
+    assert emb_mod.OpenAICompatibleEmbedder("m").max_batch == emb_mod._MAX_BATCH
+
+
+def test_max_batch_is_configurable_and_chunks_accordingly():
+    e = emb_mod.OpenAICompatibleEmbedder("m", max_batch=10)
+    e._client = _FakeClient()
+    texts = [f"t{i}" for i in range(25)]  # 10 + 10 + 5 -> 3 requests
+    vectors = e.embed(texts)
+    assert len(vectors) == 25
+    assert len(e._client.embeddings.batches) == 3
+    assert [len(b) for b in e._client.embeddings.batches] == [10, 10, 5]
+
+
+def test_embedder_from_config_threads_max_batch():
+    e = emb_mod.embedder_from_config({"model": "m", "max_batch": 96})
+    assert e.max_batch == 96
+    # Omitted -> falls back to the provider-safe default.
+    assert emb_mod.embedder_from_config({"model": "m"}).max_batch == emb_mod._MAX_BATCH
+
+
 def test_backward_compatible_alias():
     # The class was historically OpenAIEmbedder; the alias must still resolve to
     # the new implementation so existing imports keep working.

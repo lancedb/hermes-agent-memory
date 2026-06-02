@@ -28,9 +28,12 @@ _KNOWN_DIMS = {
     "text-embedding-ada-002": 1536,
 }
 
-# Inputs per embeddings request. The API allows far more, but chunking keeps
-# request sizes bounded for large ingests (e.g. a long conversation haystack).
-_MAX_BATCH = 128
+# Inputs per embeddings request. Providers cap this differently — OpenAI allows
+# up to 2048, but Google/Gemini caps at 100 and Cohere at 96 — so it's
+# configurable (``max_batch``) and the default is the safe common denominator
+# that works across OpenAI and Gemini. Chunking also keeps request sizes bounded
+# for large ingests (e.g. a long conversation haystack).
+_MAX_BATCH = 100
 
 
 class OpenAICompatibleEmbedder:
@@ -41,6 +44,7 @@ class OpenAICompatibleEmbedder:
     - ``base_url``    — override the API base (``None`` = OpenAI's default).
     - ``api_key_env`` — the environment variable holding the API key.
     - ``dimensions``  — optional output dimensions (matryoshka models).
+    - ``max_batch``   — max inputs per request (provider-dependent cap).
 
     Defaults reproduce the original OpenAI behavior exactly, so existing setups
     that configure only a model keep working.
@@ -53,11 +57,13 @@ class OpenAICompatibleEmbedder:
         base_url: str | None = None,
         api_key_env: str = DEFAULT_API_KEY_ENV,
         dimensions: int | None = None,
+        max_batch: int | None = None,
     ) -> None:
         self.model_name = model_name or DEFAULT_MODEL
         self.base_url = base_url or None
         self.api_key_env = api_key_env or DEFAULT_API_KEY_ENV
         self._dimensions = dimensions
+        self.max_batch = int(max_batch) if max_batch else _MAX_BATCH
         # Known offline; falls back to a one-shot probe for unknown models.
         self._dim: int | None = dimensions or _KNOWN_DIMS.get(self.model_name)
         self._client = None
@@ -109,10 +115,10 @@ class OpenAICompatibleEmbedder:
         if not texts:
             return []
         out: list[list[float]] = []
-        for start in range(0, len(texts), _MAX_BATCH):
+        for start in range(0, len(texts), self.max_batch):
             # OpenAI rejects empty strings; substitute a single space so row
             # ordering is preserved 1:1 with the response.
-            batch = [t if t else " " for t in texts[start : start + _MAX_BATCH]]
+            batch = [t if t else " " for t in texts[start : start + self.max_batch]]
             kwargs: dict = {"model": self.model_name, "input": batch}
             if self._dimensions is not None:
                 kwargs["dimensions"] = self._dimensions
@@ -138,4 +144,5 @@ def embedder_from_config(embedding_cfg: Dict[str, Any] | None) -> OpenAICompatib
         base_url=cfg.get("base_url") or None,
         api_key_env=cfg.get("api_key_env") or DEFAULT_API_KEY_ENV,
         dimensions=cfg.get("dimensions"),
+        max_batch=cfg.get("max_batch"),
     )
