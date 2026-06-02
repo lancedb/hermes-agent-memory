@@ -49,8 +49,20 @@ Use a different OpenAI embedding model:
 plugins:
   lancedb:
     embedding:
-      provider: openai
       model: text-embedding-3-large   # changing dim requires recreating the table
+```
+
+Or point at any OpenAI-compatible endpoint — e.g. fully local embeddings via
+Ollama (no code change needed):
+
+```yaml
+# ~/.hermes/config.yaml
+plugins:
+  lancedb:
+    embedding:
+      model: nomic-embed-text
+      base_url: http://localhost:11434/v1
+      api_key_env: OLLAMA_API_KEY     # any value works for local Ollama
 ```
 
 Enable the cross-encoder reranker (replaces RRF in hybrid mode; this is the one

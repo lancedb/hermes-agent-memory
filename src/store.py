@@ -10,12 +10,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from .embeddings import OpenAIEmbedder
+from .embeddings import OpenAICompatibleEmbedder
 
 logger = logging.getLogger(__name__)
 
 TABLE_NAME = "memories"
 SCHEMA_VERSION = 1
+
+
+class EmbeddingDimMismatch(RuntimeError):
+    """Raised when the configured embedder's dim doesn't match the stored table.
+
+    The vector dimension is fixed when the table is first created. Switching the
+    embedding provider or model to one with a different dimension makes every
+    search silently return nothing, so we fail loudly with a clear remedy
+    instead.
+    """
 
 RESULT_COLUMNS = [
     "id",
@@ -92,7 +102,7 @@ class LanceDBStore:
     def __init__(
         self,
         hermes_home: str | Path,
-        embedder: OpenAIEmbedder,
+        embedder: OpenAICompatibleEmbedder,
         *,
         optimize_every_commits: int = 50,
         cleanup_older_than_days: int = 7,
@@ -129,11 +139,46 @@ class LanceDBStore:
 
         self.db_path.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self.db_path))
+        existed = True
         try:
             self._table = self._db.open_table(TABLE_NAME)
         except Exception:
+            existed = False
             self._table = self._db.create_table(TABLE_NAME, schema=self._schema())
+        # Guard an existing table against an embedder whose dim no longer matches
+        # the stored vector column (e.g. the user switched embedding model). Done
+        # outside the open/create try so the mismatch error isn't swallowed into
+        # a spurious create attempt. A freshly created table always matches.
+        if existed:
+            self._check_embedding_dim()
         self._ensure_fts_index()
+
+    def _check_embedding_dim(self) -> None:
+        stored = self._table_vector_dim()
+        if stored is None:
+            return
+        configured = self.embedder.dim
+        if stored != configured:
+            model = getattr(self.embedder, "model_name", "?")
+            raise EmbeddingDimMismatch(
+                f"Configured embedding dim ({configured}, model "
+                f"'{model}') does not match the existing "
+                f"table's vector dim ({stored}) at {self.db_path / (TABLE_NAME + '.lance')}. "
+                "Either restore the previous embedding model, or delete the "
+                "dataset directory to recreate it with the new model."
+            )
+
+    def _table_vector_dim(self) -> int | None:
+        """Return the stored vector column's fixed-size-list dimension, if any."""
+        import pyarrow as pa
+
+        try:
+            field = self._table.schema.field("vector")
+        except Exception:
+            return None
+        if pa.types.is_fixed_size_list(field.type):
+            return field.type.list_size
+        return None
 
     def _schema(self):
         import pyarrow as pa

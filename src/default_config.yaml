@@ -16,8 +16,21 @@ memory:
 plugins:
   lancedb:
     embedding:
-      provider: openai
+      # Embeddings go through an OpenAI-compatible client. The default below is
+      # OpenAI, but you can point it at ANY OpenAI-compatible embeddings endpoint
+      # without code changes — just set `base_url` + `api_key_env` (and `model`).
+      # Verified examples:
+      #   OpenRouter  base_url: https://openrouter.ai/api/v1  api_key_env: OPENROUTER_API_KEY  model: google/gemini-embedding-001
+      #   Ollama      base_url: http://localhost:11434/v1     api_key_env: OLLAMA_API_KEY      model: nomic-embed-text
+      # Also works with Nous, Together, vLLM, LM Studio, or any self-hosted server
+      # that speaks the OpenAI embeddings shape. NOTE: changing the model (or its
+      # dimension) against an existing store requires recreating the table.
+      provider: openai                # label; currently selects the OpenAI-compatible client
       model: text-embedding-3-small   # 1536-dim; requires OPENAI_API_KEY
+      base_url: null                  # null = OpenAI default; set to an OpenAI-compatible endpoint to switch providers
+      api_key_env: OPENAI_API_KEY     # env var holding the API key (e.g. OPENROUTER_API_KEY when base_url is OpenRouter)
+      dimensions: null                # optional output dims (matryoshka text-embedding-3-* models)
+      max_batch: 100                  # max inputs per request; provider cap (Gemini 100, Cohere 96, OpenAI up to 2048)
 
     retrieval:
       # mode: vector | hybrid | fts (per-call override via the recall tool's `mode`).
