@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from .embeddings import OpenAIEmbedder
+
 logger = logging.getLogger(__name__)
 
 TABLE_NAME = "memories"
@@ -90,7 +92,7 @@ class LanceDBStore:
     def __init__(
         self,
         hermes_home: str | Path,
-        embedder: Any,
+        embedder: OpenAIEmbedder,
         *,
         optimize_every_commits: int = 50,
         cleanup_older_than_days: int = 7,

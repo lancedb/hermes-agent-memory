@@ -210,18 +210,11 @@ __marimo__/
 
 # Local
 .DS_Store
-data/
 archive/
-recipe_lancedb/
 node_modules/
 frontend/node_modules/
 frontend/dist/
-
-# local
-
-# Benchmark artifacts
-benchmarks/data/
 benchmarks/runs/
-benchmarks/.cache/
+benchmarks/data/
 scratch
 .claude
