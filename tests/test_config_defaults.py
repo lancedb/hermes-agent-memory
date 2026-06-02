@@ -9,7 +9,9 @@ import yaml
 
 def _load_config_module():
     root = Path(__file__).resolve().parents[1]
-    spec = importlib.util.spec_from_file_location("lancedb_config_under_test", root / "config.py")
+    spec = importlib.util.spec_from_file_location(
+        "lancedb_config_under_test", root / "src" / "config.py"
+    )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     assert spec.loader is not None
@@ -24,7 +26,7 @@ cfg = _load_config_module()
 def test_defaults_are_loaded_from_default_config_yaml():
     # DEFAULTS must be sourced from default_config.yaml (single source of truth),
     # not a hardcoded dict — so the two can never drift.
-    raw = yaml.safe_load((ROOT / "default_config.yaml").read_text(encoding="utf-8"))
+    raw = yaml.safe_load((ROOT / "src" / "default_config.yaml").read_text(encoding="utf-8"))
     expected = raw["plugins"]["lancedb"]
     assert cfg.DEFAULTS == expected
 

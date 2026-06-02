@@ -93,10 +93,10 @@ and preference are hard for every method) — see the per-type matrix in the run
   variant. (Query embeddings are *not* cached, so each variant's query latency
   is measured fairly.) The cache resets between cases to bound memory.
 - **Reproducible config.** The harness reads the plugin's *shipped* defaults
-  (`default_config.yaml` via `config.DEFAULTS`), **not** your personal
+  (`src/default_config.yaml` via `config.DEFAULTS`), **not** your personal
   `~/.hermes/config.yaml`. So results reflect the plugin as shipped and don't
   vary with your machine setup. To benchmark a different embedding/reranker
-  model, edit `default_config.yaml` (the repo's single config source).
+  model, edit `src/default_config.yaml` (the repo's single config source).
 
 ## Requirements
 
