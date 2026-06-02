@@ -830,14 +830,14 @@ def build_benchmark_resources(
         return resources
 
     plugin = load_lancedb_plugin()
-    config_mod = importlib.import_module(f"{plugin.__name__}.config")
+    config_mod = importlib.import_module(f"{plugin.__name__}.src.config")
     # Use the plugin's SHIPPED defaults (default_config.yaml via DEFAULTS), NOT
     # load_config() — which would merge the user's personal ~/.hermes/config.yaml
     # and make benchmark results depend on their machine. The benchmark measures
     # the plugin as shipped, so it must be reproducible from the repo alone.
     cfg = config_mod.DEFAULTS
     if resources.embedder is None:
-        embeddings_mod = importlib.import_module(f"{plugin.__name__}.embeddings")
+        embeddings_mod = importlib.import_module(f"{plugin.__name__}.src.embeddings")
         embedding_cfg = cfg.get("embedding", {}) or {}
         model_name = embedding_cfg.get("model", "text-embedding-3-small")
         log_progress(args, f"Using embedding model: {model_name}")

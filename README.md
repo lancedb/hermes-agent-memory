@@ -16,13 +16,13 @@ Embeds a workspace-scoped LanceDB table at `~/.hermes/lancedb/memories.lance` an
 
 ## Repo layout
 
-This repo's primary purpose is the **LanceDB memory plugin**. The benchmark is auxiliary — it exists only to show the plugin is fast, cheap, and accurate. Hermes loads a plugin from its directory root, so the plugin modules live at the repo root (they can't move into a subpackage):
+This repo's primary purpose is the **LanceDB memory plugin**. The benchmark is auxiliary — it exists only to show the plugin is fast, cheap, and accurate. Hermes loads a plugin from its directory root (the repo-root `__init__.py` + `plugin.yaml`); the implementation lives in the `src/` subpackage, which the entry point re-exports. If you only want the plugin, everything you need is under `src/` — you never have to touch the benchmark.
 
 | Path | What it is |
 |---|---|
-| `__init__.py`, `provider.py`, `store.py`, `retrieval.py`, `config.py`, `embeddings.py`, `extraction.py`, `tools.py` | **The plugin** — loaded by Hermes as the `hermes_agent_memory` package. |
+| `__init__.py` | Thin entry point — Hermes loads this; it re-exports the provider from `src/` and defines `register()`. |
 | `plugin.yaml` | Hermes plugin manifest (name, hooks). |
-| `default_config.yaml` | The plugin's default settings — the single source, copied into `~/.hermes/config.yaml`. |
+| `src/` | **The plugin** — `provider.py`, `store.py`, `retrieval.py`, `config.py`, `embeddings.py`, `extraction.py`, `tools.py`, and `default_config.yaml` (the single source of defaults, copied into `~/.hermes/config.yaml`). |
 | `benchmarks/` | **Benchmark only** (LongMemEval harness). Never imported by the plugin. |
 | `tests/` | Test suite. |
 
@@ -198,7 +198,7 @@ Two details: `vector`/`fts` project their score column, but `hybrid` fetches unp
 
 ## Configuration reference
 
-**You don't have to configure anything** — once the provider is activated (`hermes memory setup`, which sets `memory.provider: lancedb`), the plugin runs on its shipped defaults from [`default_config.yaml`](default_config.yaml). `~/.hermes/config.yaml` is purely for *overrides*: keys you set there win, keys you omit fall back to the defaults. To customize, **copy the blocks from `default_config.yaml` into your `~/.hermes/config.yaml`** and edit only what you want to change.
+**You don't have to configure anything** — once the provider is activated (`hermes memory setup`, which sets `memory.provider: lancedb`), the plugin runs on its shipped defaults from [`default_config.yaml`](src/default_config.yaml). `~/.hermes/config.yaml` is purely for *overrides*: keys you set there win, keys you omit fall back to the defaults. To customize, **copy the blocks from `default_config.yaml` into your `~/.hermes/config.yaml`** and edit only what you want to change.
 
 Embeddings call the OpenAI API (`OPENAI_API_KEY` required); everything else is local. Don't edit `default_config.yaml` to change your own setup — a plugin update overwrites it; edit `~/.hermes/config.yaml`.
 

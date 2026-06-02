@@ -7,7 +7,9 @@ from pathlib import Path
 
 def _load_embeddings_module():
     root = Path(__file__).resolve().parents[1]
-    spec = importlib.util.spec_from_file_location("lancedb_embeddings_under_test", root / "embeddings.py")
+    spec = importlib.util.spec_from_file_location(
+        "lancedb_embeddings_under_test", root / "src" / "embeddings.py"
+    )
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     assert spec.loader is not None

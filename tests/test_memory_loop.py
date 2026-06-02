@@ -95,7 +95,7 @@ def test_remember_recall_read_and_forget(tmp_path):
 
 def test_auto_compaction_runs_after_threshold(tmp_path):
     plugin = _load_plugin()
-    store_mod = importlib.import_module(f"{plugin.__name__}.store")
+    store_mod = importlib.import_module(f"{plugin.__name__}.src.store")
     store = store_mod.LanceDBStore(
         tmp_path,
         FakeEmbedder(),
