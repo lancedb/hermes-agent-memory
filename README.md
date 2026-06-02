@@ -179,7 +179,7 @@ The provider's system-prompt block instructs the model when to use each tool: `l
 
 Fusion only applies to `hybrid` mode and is config-only — the agent picks the *mode* per call, but the *fusion* is a global setting. To switch RRF → vector-biased `linear`, set `reranker.type: linear` (and `reranker.weight`) in `~/.hermes/config.yaml`.
 
-> A pure-lexical `fts` mode (BM25 only, no embeddings) also exists as a valid `mode` value, but it's a niche escape hatch and **not recommended** — semantic recall lives in `vector`/`hybrid`, which is what these docs and the benchmark cover.
+> A pure-lexical `fts` mode (BM25 only, no embeddings) also exists as a valid `mode` value, but it's a niche escape hatch and **not recommended**: keyword-only matching tends to surface coincidental, irrelevant rows that pollute the agent's context rather than help it. Semantic recall lives in `vector`/`hybrid`, which is what these docs and the benchmark cover.
 
 ### Under the hood
 
