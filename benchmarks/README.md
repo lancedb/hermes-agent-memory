@@ -119,10 +119,11 @@ A few extra requirements depending on what you run:
   LLM calls (`agent.auxiliary_client`). If Hermes lives elsewhere, run from a
   workspace where `../hermes-agent` exists or add it to `PYTHONPATH`. Real
   answer/judge calls need Hermes provider credentials (`hermes setup`).
-- **`sentence-transformers`** — needed *only* for `lancedb-hybrid-cross-encoder`
-  (the cross-encoder reranker). It is not a project dependency. Add it just for
-  the run with `uv run --with sentence-transformers ...`. If it's missing, that
-  variant silently falls back to unranked hybrid.
+- **`sentence-transformers`** (pulls in **`torch`, ~2 GB**) — needed *only* for
+  `lancedb-hybrid-cross-encoder` (the cross-encoder reranker). It is not a
+  project dependency. Add it just for the run with `uv run --with
+  sentence-transformers ...`. If it's missing, that variant silently falls back
+  to unranked hybrid.
 
 The embedding cache and (when selected) the cross-encoder reranker are loaded
 once at startup and reused across cases.

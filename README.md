@@ -35,7 +35,7 @@ The plugin and the benchmark are cleanly separated: the benchmark borrows the pl
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed locally
 - An LLM API key (OpenAI, OpenRouter, Anthropic, …)
 
-Runtime dependencies installed into Hermes's venv: `lancedb >= 0.13`, `openai`, `pyyaml`. Embeddings use the OpenAI API (`text-embedding-3-small`), so an `OPENAI_API_KEY` is required. `sentence-transformers` is only needed if you opt into the cross-encoder reranker (`reranker.type: cross-encoder`).
+Runtime dependencies installed into Hermes's venv: `lancedb >= 0.33`, `openai`, `pyyaml`. Embeddings use the OpenAI API (`text-embedding-3-small`), so an `OPENAI_API_KEY` is required. The default install needs **no** local ML stack. Only if you opt into the cross-encoder reranker (`reranker.type: cross-encoder`) do you also need `sentence-transformers` — which pulls in **`torch` (~2 GB)**.
 
 ---
 
@@ -84,7 +84,7 @@ uv pip install --python /path/to/your/hermes-agent/venv/bin/python3 lancedb open
 uv pip install --python ~/.hermes/hermes-agent/venv/bin/python3 lancedb openai pyyaml
 ```
 
-Embeddings call the OpenAI API, so set `OPENAI_API_KEY` in your environment (or `~/.hermes/.env`). Only if you enable the cross-encoder reranker do you also need `sentence-transformers` — install it the same way (`uv pip install --python … sentence-transformers`); note it can exceed the setup-time install budget of 120s due to its torch dependency.
+Embeddings call the OpenAI API, so set `OPENAI_API_KEY` in your environment (or `~/.hermes/.env`). **Only if you enable the cross-encoder reranker** (`reranker.type: cross-encoder`) do you also need `sentence-transformers` — install it the same way (`uv pip install --python … sentence-transformers`). Note it pulls in **`torch` (~2 GB)** and can exceed the setup-time install budget of 120s; the default plugin needs neither.
 
 ### 4. Activate the provider
 

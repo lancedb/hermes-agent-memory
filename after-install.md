@@ -54,8 +54,9 @@ plugins:
 ```
 
 Enable the cross-encoder reranker (replaces RRF in hybrid mode; this is the one
-feature that needs `sentence-transformers` installed — `uv pip install --python
-… sentence-transformers`):
+feature that needs `sentence-transformers` installed, which pulls in `torch`
+(~2 GB) — `uv pip install --python … sentence-transformers`. Nothing else in the
+plugin needs it):
 
 ```yaml
 plugins:
