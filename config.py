@@ -1,8 +1,13 @@
-"""Plugin config — loaded from $HERMES_HOME/config.yaml under plugins.lancedb.
+"""Plugin config.
 
-Returns the defaults merged with any user overrides. Falls back to defaults
-gracefully when running outside Hermes (e.g. unit tests where the hermes_*
-modules aren't on the import path).
+The plugin's default settings live in ``default_config.yaml`` (the single
+source of truth). This module loads them and merges any user overrides from
+``$HERMES_HOME/config.yaml`` under ``plugins.lancedb``.
+
+Users configure the plugin by editing ``~/.hermes/config.yaml`` — copy-paste
+``default_config.yaml`` to get started. Do not edit this module or
+``default_config.yaml`` to change your own setup; a plugin update overwrites
+both.
 """
 from __future__ import annotations
 
@@ -11,45 +16,25 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
+import yaml
+
 logger = logging.getLogger(__name__)
 
-DEFAULTS: Dict[str, Any] = {
-    "embedding": {
-        "provider": "sentence-transformers",
-        "model": "BAAI/bge-small-en-v1.5",
-    },
-    "retrieval": {
-        "mode": "hybrid",            # "hybrid" | "vector" | "fts"
-        "top_k": 10,
-        "search_kinds": ["fact"],
-        "reranker": {
-            # "rrf"           — Reciprocal Rank Fusion. The fusion strategy for
-            #                   hybrid mode (no-op for mode=vector/fts, which
-            #                   return vector-distance / BM25 order natively).
-            # "cross-encoder" — replace RRF / native ordering with a
-            #                   sentence-transformers cross-encoder.
-            "type": "rrf",
-            "model": "cross-encoder/ettin-reranker-32m-v1",
-            # Cross-encoder only: pull this many candidates from the base
-            # retriever, let the cross-encoder reorder them, then slice to
-            # top_k. Larger = better recall, slower latency. 50 is a sensible
-            # default for top_k in the 5-10 range.
-            "rerank_top_n": 50,
-        },
-    },
-    "extraction": {
-        "enabled": True,
-        "min_turns": 3,
-    },
-    "maintenance": {
-        # Auto-compaction: Lance commits a new version on every add/delete, and
-        # most agent writes are single-row. Without periodic optimize() the
-        # dataset accumulates tiny fragments and old version files indefinitely.
-        "enabled": True,
-        "optimize_every_commits": 50,
-        "cleanup_older_than_days": 7,
-    },
-}
+_DEFAULT_CONFIG_PATH = Path(__file__).parent / "default_config.yaml"
+
+
+def _load_defaults() -> Dict[str, Any]:
+    """Load the plugin's defaults from default_config.yaml (single source).
+
+    Returns the ``plugins.lancedb`` block. Raised errors are intentional — a
+    missing or malformed defaults file is a packaging bug, not a runtime
+    fallback condition.
+    """
+    raw = yaml.safe_load(_DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    return (raw.get("plugins", {}) or {}).get("lancedb", {}) or {}
+
+
+DEFAULTS: Dict[str, Any] = _load_defaults()
 
 
 def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
@@ -64,11 +49,14 @@ def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]
 
 
 def load_config() -> Dict[str, Any]:
-    """Return defaults merged with user overrides from config.yaml."""
+    """Return defaults merged with user overrides from ~/.hermes/config.yaml.
+
+    Falls back to the defaults when running outside Hermes (e.g. unit tests
+    where the hermes_* modules aren't importable) or when no config.yaml exists.
+    """
     try:
         from hermes_constants import get_hermes_home
         from hermes_cli.config import cfg_get
-        import yaml
     except ImportError:
         return copy.deepcopy(DEFAULTS)
 
@@ -89,10 +77,6 @@ def load_config() -> Dict[str, Any]:
 def save_plugin_config(values: Dict[str, Any], hermes_home: str) -> None:
     """Write LanceDB plugin config under plugins.lancedb in config.yaml."""
     config_path = Path(hermes_home) / "config.yaml"
-    try:
-        import yaml
-    except ImportError as exc:
-        raise RuntimeError("pyyaml is required to save lancedb config") from exc
 
     existing: Dict[str, Any] = {}
     if config_path.exists():

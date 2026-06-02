@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from .embeddings import SentenceTransformerEmbedder
+from .embeddings import OpenAIEmbedder
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class LanceDBStore:
     def __init__(
         self,
         hermes_home: str | Path,
-        embedder: SentenceTransformerEmbedder,
+        embedder: OpenAIEmbedder,
         *,
         optimize_every_commits: int = 50,
         cleanup_older_than_days: int = 7,

@@ -9,7 +9,7 @@ authors = [
     { name = "LanceDB" },
 ]
 dependencies = [
-    "lancedb>=0.13.0",
+    "lancedb>=0.33.0",
     "pyyaml",
     "openai>=2.38.0",
     "requests>=2.34.2",
