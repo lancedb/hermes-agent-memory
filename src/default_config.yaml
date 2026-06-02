@@ -18,8 +18,9 @@ plugins:
     embedding:
       # Embeddings go through an OpenAI-compatible client. The default is OpenAI
       # itself, but `base_url` + `api_key_env` point it at any endpoint that
-      # speaks the same shape (Nous, Together, vLLM, Ollama / LM Studio in
-      # OpenAI-compatible mode, a self-hosted server) — no code change needed.
+      # speaks the same shape (OpenRouter, Nous, Together, vLLM, Ollama /
+      # LM Studio in OpenAI-compatible mode, a self-hosted server) — no code
+      # change needed.
       provider: openai                # label; currently selects the OpenAI-compatible client
       model: text-embedding-3-small   # 1536-dim; requires OPENAI_API_KEY
       base_url: null                  # null = OpenAI default; e.g. http://localhost:11434/v1 for Ollama

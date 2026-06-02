@@ -202,7 +202,19 @@ Two details: `vector`/`fts` project their score column, but `hybrid` fetches unp
 
 By default embeddings call the OpenAI API (`OPENAI_API_KEY` required); everything else is local. Don't edit `default_config.yaml` to change your own setup — a plugin update overwrites it; edit `~/.hermes/config.yaml`.
 
-To use a different embeddings backend, point the OpenAI-compatible client at any endpoint that speaks the same shape (no code change needed). For example, fully local embeddings via Ollama:
+To use a different embeddings backend, point the OpenAI-compatible client at any endpoint that speaks the same shape (no code change needed). For example, a hosted non-OpenAI model via OpenRouter:
+
+```yaml
+# ~/.hermes/config.yaml
+plugins:
+  lancedb:
+    embedding:
+      model: google/gemini-embedding-001
+      base_url: https://openrouter.ai/api/v1
+      api_key_env: OPENROUTER_API_KEY
+```
+
+…or fully local embeddings via Ollama:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -231,7 +243,7 @@ Changing the embedding model (or its dimension) against an existing store requir
 | | `min_turns` | `3` | Skip extraction when the user has spoken fewer than N turns. |
 | `embedding` | `provider` | `openai` | Label; currently always selects the OpenAI-compatible client. The actual endpoint is controlled by `base_url` / `api_key_env` below. |
 | | `model` | `text-embedding-3-small` | 1536-dim for the default. Embedding dim must match the existing table: recreate the table if you change models (or dim) against an existing store — the plugin now fails loudly on a mismatch instead of silently returning nothing. |
-| | `base_url` | `null` | `null` = OpenAI's default endpoint. Set to any OpenAI-compatible embeddings endpoint — Nous, Together, vLLM, Ollama / LM Studio in OpenAI-compatible mode (e.g. `http://localhost:11434/v1`), or a self-hosted server. |
+| | `base_url` | `null` | `null` = OpenAI's default endpoint. Set to any OpenAI-compatible embeddings endpoint — OpenRouter (`https://openrouter.ai/api/v1`), Nous, Together, vLLM, Ollama / LM Studio in OpenAI-compatible mode (e.g. `http://localhost:11434/v1`), or a self-hosted server. |
 | | `api_key_env` | `OPENAI_API_KEY` | Name of the environment variable holding the API key. Point it at a different var to keep your embedding key separate from `OPENAI_API_KEY`. |
 | | `dimensions` | `null` | Optional output dimensions for matryoshka models (`text-embedding-3-*`). `null` = the model's native dimension. |
 | `maintenance` | `enabled` | `true` | Set `false` to disable auto-compaction. |
