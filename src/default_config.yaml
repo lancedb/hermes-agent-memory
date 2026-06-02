@@ -33,10 +33,11 @@ plugins:
       max_batch: 100                  # max inputs per request; provider cap (Gemini 100, Cohere 96, OpenAI up to 2048)
 
     retrieval:
-      # mode: vector | hybrid | fts (per-call override via the recall tool's `mode`).
+      # mode: vector (default) or hybrid (per-call override via the recall tool's `mode`).
       # Default is pure vector: lightest path (no reranker / sentence-transformers),
       # and it outperformed RRF hybrid in our LongMemEval benchmark. Switch to
       # `hybrid` (and pick a `reranker.type` below) to add lexical matching.
+      # (A lexical-only `fts` mode also exists but is a niche, unrecommended option.)
       mode: vector
       top_k: 10
       search_kinds: [fact]      # row kinds recall returns; "turn" rows are provenance/fallback

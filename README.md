@@ -2,11 +2,11 @@
 
 LanceDB-backed memory provider plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
-Embeds a workspace-scoped LanceDB table at `~/.hermes/lancedb/memories.lance` and exposes four tools to the agent: `lancedb_recall`, `lancedb_remember`, `lancedb_read`, `lancedb_forget`. Recall defaults to pure vector ANN over OpenAI embeddings; hybrid (vector + BM25, with RRF / linear / cross-encoder fusion) and pure FTS are available per call or via config. Durable facts are extracted from sessions at pre-compress and session end. Everything runs in Hermes's Python process — no external service, no server.
+Embeds a workspace-scoped LanceDB table at `~/.hermes/lancedb/memories.lance` and exposes four tools to the agent: `lancedb_recall`, `lancedb_remember`, `lancedb_read`, `lancedb_forget`. Recall defaults to pure vector ANN over OpenAI embeddings, with an optional hybrid mode (vector + BM25, fused via RRF / linear / cross-encoder) per call or via config. Durable facts are extracted from sessions at pre-compress and session end. The memory store runs entirely in Hermes's Python process — no external memory service, no server (embeddings call your configured embeddings API).
 
 ## Features
 
-- **Vector recall by default**: ANN over OpenAI embeddings — lightest, no reranker. Switch to hybrid (vector + BM25) or pure FTS per call or via config.
+- **Vector recall by default**: ANN over OpenAI embeddings — lightest, no reranker. Switch to hybrid (vector + BM25) per call or via config.
 - **Hybrid fusion (configurable)**: default is RRF; `reranker.type: linear` does a weighted vector/FTS combination (`weight` biases toward vector); `reranker.type: cross-encoder` adds a reranking pass (default model `cross-encoder/ettin-reranker-17m-v1`, configurable). Only the cross-encoder needs `sentence-transformers`.
 - *Workspace isolation*: every row carries an `agent_workspace` tag and recall pre-filters by it.
 - **Fact-first retrieval**: recall surfaces extracted facts; raw conversation turns are stored as provenance and used only as fallback.
@@ -159,7 +159,7 @@ uv add --dev pytest-mock
 
 | Tool | Purpose |
 |---|---|
-| `lancedb_recall` | Vector (default) / hybrid / FTS recall over workspace memory. Returns IDs, snippets, scores, provenance turn IDs. |
+| `lancedb_recall` | Vector (default) / hybrid recall over workspace memory. Returns IDs, snippets, scores, provenance turn IDs. |
 | `lancedb_remember` | Store a durable fact (`preference`, `entity`, `event`, `case`, `pattern`, `general`). Deduplicated by content hash. |
 | `lancedb_read` | Fetch one memory by ID, optionally with the full provenance turns it was extracted from. |
 | `lancedb_forget` | Two-step: `action: preview` to list candidates by description, then `action: delete` with the exact ID. |
@@ -174,25 +174,26 @@ The provider's system-prompt block instructs the model when to use each tool: `l
 
 | You choose | Options | Set in | Scope |
 |---|---|---|---|
-| **Search mode** | `vector` (default) · `hybrid` · `fts` | `lancedb_recall`'s `mode` argument; default from key `plugins.lancedb.retrieval.mode` in `~/.hermes/config.yaml` | per call |
+| **Search mode** | `vector` (default) · `hybrid` | `lancedb_recall`'s `mode` argument; default from key `plugins.lancedb.retrieval.mode` in `~/.hermes/config.yaml` | per call |
 | **Hybrid fusion** | `rrf` · `linear` · `cross-encoder` | key `plugins.lancedb.retrieval.reranker.type` in `~/.hermes/config.yaml` | global |
 
 Fusion only applies to `hybrid` mode and is config-only — the agent picks the *mode* per call, but the *fusion* is a global setting. To switch RRF → vector-biased `linear`, set `reranker.type: linear` (and `reranker.weight`) in `~/.hermes/config.yaml`.
+
+> A pure-lexical `fts` mode (BM25 only, no embeddings) also exists as a valid `mode` value, but it's a niche escape hatch and **not recommended**: keyword-only matching tends to surface coincidental, irrelevant rows that pollute the agent's context rather than help it. Semantic recall lives in `vector`/`hybrid`, which is what these docs and the benchmark cover.
 
 ### Under the hood
 
 1. Build a `WHERE` prefilter on workspace + user + kind + category.
 2. Run the retriever for the chosen **mode**:
    - `vector` — ANN over `text-embedding-3-small` embeddings *(score: `_distance`)*.
-   - `fts` — BM25 over `content` *(score: `_score`)*.
-   - `hybrid` — run both legs, then fuse *(score: `_relevance_score`)*.
+   - `hybrid` — run a vector leg and a BM25 full-text leg, then fuse *(score: `_relevance_score`)*.
 3. For `hybrid`, fuse by `reranker.type`:
    - `rrf` — Reciprocal Rank Fusion (rank-based, equal-weight legs).
    - `linear` — weighted vector + FTS scores; `reranker.weight` is the vector weight (0–1).
    - `cross-encoder` — rerank an oversampled pool (`rerank_top_n`) with a sentence-transformers model, then slice to `top_k` (cached, warmed at `initialize()`).
 4. Return the top `top_k` rows.
 
-Two details: `vector`/`fts` project their score column, but `hybrid` fetches unprojected and drops the `vector` column in Python (naming `_relevance_score` in `select()` errors — it pushes down to the FTS leg). And if hybrid fails (e.g. FTS index not ready), recall logs a warning and falls back to pure vector.
+Two details: `vector` projects its score column, but `hybrid` fetches unprojected and drops the `vector` column in Python (naming `_relevance_score` in `select()` errors — it pushes down to the FTS leg). And if hybrid fails (e.g. the full-text leg's index isn't ready), recall logs a warning and falls back to pure vector.
 
 ---
 
@@ -232,7 +233,7 @@ Changing the embedding model (or its dimension) against an existing store requir
 
 | Section | Key | Default | Notes |
 |---|---|---|---|
-| `retrieval` | `mode` | `vector` | `vector` \| `hybrid` \| `fts`. Per-call override via the `mode` parameter on `lancedb_recall`. |
+| `retrieval` | `mode` | `vector` | `vector` (default) or `hybrid`. Per-call override via the `mode` parameter on `lancedb_recall`. (A lexical-only `fts` value also works but is a niche, unrecommended escape hatch.) |
 | | `top_k` | `10` | Hard cap inside the retrieval layer is 50. |
 | | `search_kinds` | `[fact]` | Recall surfaces facts; turn rows are stored as provenance and used as fallback when no facts match. |
 | `retrieval.reranker` | `type` | `rrf` | Hybrid fusion: `rrf` \| `linear` \| `cross-encoder`. No-op for `mode: vector` / `mode: fts` (one ranked list). |
