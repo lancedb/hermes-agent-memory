@@ -80,3 +80,45 @@ def test_embed_chunks_large_inputs():
 def test_embed_one_returns_single_vector():
     e = _embedder()
     assert e.embed_one("hello") == [5.0, 0.5]
+
+
+def test_backward_compatible_alias():
+    # The class was historically OpenAIEmbedder; the alias must still resolve to
+    # the new implementation so existing imports keep working.
+    assert emb_mod.OpenAIEmbedder is emb_mod.OpenAICompatibleEmbedder
+
+
+def test_embedder_from_config_wires_endpoint_key_and_dims():
+    e = emb_mod.embedder_from_config(
+        {
+            "model": "nomic-embed-text",
+            "base_url": "http://localhost:11434/v1",
+            "api_key_env": "MY_EMBED_KEY",
+            "dimensions": 768,
+        }
+    )
+    assert e.model_name == "nomic-embed-text"
+    assert e.base_url == "http://localhost:11434/v1"
+    assert e.api_key_env == "MY_EMBED_KEY"
+    assert e._dimensions == 768
+
+
+def test_embedder_from_config_defaults_match_openai():
+    # An empty/partial block must reproduce the original OpenAI defaults so
+    # existing setups that configure only a model are unaffected.
+    e = emb_mod.embedder_from_config({})
+    assert e.model_name == emb_mod.DEFAULT_MODEL
+    assert e.base_url is None
+    assert e.api_key_env == "OPENAI_API_KEY"
+
+
+def test_client_uses_configured_base_url_and_key(monkeypatch):
+    monkeypatch.setenv("MY_EMBED_KEY", "test-key-123")
+    e = emb_mod.OpenAICompatibleEmbedder(
+        "nomic-embed-text",
+        base_url="http://localhost:11434/v1",
+        api_key_env="MY_EMBED_KEY",
+    )
+    client = e.client  # constructs the real OpenAI-compatible client
+    assert client.api_key == "test-key-123"
+    assert str(client.base_url).rstrip("/") == "http://localhost:11434/v1"

@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from agent.memory_provider import MemoryProvider
 
 from .config import DEFAULTS, load_config, save_plugin_config
-from .embeddings import OpenAIEmbedder
+from .embeddings import OpenAICompatibleEmbedder, embedder_from_config
 from .extraction import extract
 from .retrieval import format_prefetch, recall as recall_memories
 from .store import (
@@ -37,7 +37,7 @@ class LanceDBMemoryProvider(MemoryProvider):
         self._user_id: str = ""
         self._message_index: int = 0
         self._initialized: bool = False
-        self._embedder: OpenAIEmbedder | None = None
+        self._embedder: OpenAICompatibleEmbedder | None = None
         self._reranker: Any = None
         self._store: LanceDBStore | None = None
         self._tool_dispatcher = LanceDBToolDispatcher(self)
@@ -267,13 +267,15 @@ class LanceDBMemoryProvider(MemoryProvider):
         save_config(config)
         save_plugin_config(DEFAULTS, hermes_home)
 
+        embedding_cfg = DEFAULTS.get("embedding", {})
+        api_key_env = embedding_cfg.get("api_key_env") or "OPENAI_API_KEY"
         try:
-            dim = OpenAIEmbedder(DEFAULTS["embedding"]["model"]).warm()
+            dim = embedder_from_config(embedding_cfg).warm()
             print(f"\n  ✓ LanceDB memory configured (embedding dim: {dim})")
         except Exception as exc:
             print("\n  ✓ LanceDB memory configured")
             print(f"  ⚠ Embedding model warmup failed: {exc}")
-            print("  Re-run setup or start a chat once OPENAI_API_KEY is set.")
+            print(f"  Re-run setup or start a chat once {api_key_env} is set.")
         print("  Start a new session to activate.\n")
 
     def recall(
@@ -408,10 +410,9 @@ class LanceDBMemoryProvider(MemoryProvider):
     def _should_write(self) -> bool:
         return self._agent_context not in {"cron", "subagent", "flush"}
 
-    def _get_embedder(self) -> OpenAIEmbedder:
+    def _get_embedder(self) -> OpenAICompatibleEmbedder:
         if self._embedder is None:
-            model_name = self._config.get("embedding", {}).get("model", "text-embedding-3-small")
-            self._embedder = OpenAIEmbedder(model_name)
+            self._embedder = embedder_from_config(self._config.get("embedding", {}))
         return self._embedder
 
     def _get_reranker(self) -> Any:

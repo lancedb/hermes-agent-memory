@@ -841,7 +841,9 @@ def build_benchmark_resources(
         embedding_cfg = cfg.get("embedding", {}) or {}
         model_name = embedding_cfg.get("model", "text-embedding-3-small")
         log_progress(args, f"Using embedding model: {model_name}")
-        resources.embedder = embeddings_mod.OpenAIEmbedder(model_name)
+        # Build from the shipped config block so base_url / api_key_env / dims
+        # are honored exactly as a real install would.
+        resources.embedder = embeddings_mod.embedder_from_config(embedding_cfg)
         resources.embedder.warm()
 
     # Cache embeddings so the LanceDB variants (vector / hybrid-rrf /

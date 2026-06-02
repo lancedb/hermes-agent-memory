@@ -124,6 +124,30 @@ def test_auto_compaction_runs_after_threshold(tmp_path):
     assert int(sentinel.read_text()) >= 5
 
 
+def test_embedding_dim_mismatch_raises_on_reopen(tmp_path):
+    import pytest
+
+    plugin = _load_plugin()
+    store_mod = importlib.import_module(f"{plugin.__name__}.src.store")
+
+    class Dim4Embedder(FakeEmbedder):
+        dim = 4
+
+    class Dim8Embedder(FakeEmbedder):
+        dim = 8
+
+    # Create the table with a 4-dim embedder.
+    store = store_mod.LanceDBStore(tmp_path, Dim4Embedder())
+    store.open()
+    store.add_row({"kind": "fact", "content": "hello", "agent_workspace": "ws"})
+
+    # Reopening the same dataset with a different dim must fail loudly rather
+    # than silently returning nothing from every search.
+    store2 = store_mod.LanceDBStore(tmp_path, Dim8Embedder())
+    with pytest.raises(store_mod.EmbeddingDimMismatch):
+        store2.open()
+
+
 def test_reranker_cached_and_fetches_rerank_top_n(tmp_path, monkeypatch):
     """Cross-encoder reranker should be constructed once and see rerank_top_n candidates."""
     import lancedb.rerankers as lr

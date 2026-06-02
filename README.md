@@ -35,7 +35,7 @@ The plugin and the benchmark are cleanly separated: the benchmark borrows the pl
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed locally
 - An LLM API key (OpenAI, OpenRouter, Anthropic, …)
 
-Runtime dependencies installed into Hermes's venv: `lancedb >= 0.33`, `openai`, `pyyaml`. Embeddings use the OpenAI API (`text-embedding-3-small`), so an `OPENAI_API_KEY` is required. The default install needs **no** local ML stack. Only if you opt into the cross-encoder reranker (`reranker.type: cross-encoder`) do you also need `sentence-transformers` — which pulls in **`torch` (~2 GB)**.
+Runtime dependencies installed into Hermes's venv: `lancedb >= 0.33`, `openai`, `pyyaml`. Embeddings go through an OpenAI-compatible client — by default OpenAI (`text-embedding-3-small`, so an `OPENAI_API_KEY`), but you can point it at any OpenAI-compatible endpoint via config (see [Configuration reference](#configuration-reference)). The default install needs **no** local ML stack. Only if you opt into the cross-encoder reranker (`reranker.type: cross-encoder`) do you also need `sentence-transformers` — which pulls in **`torch` (~2 GB)**.
 
 ---
 
@@ -200,7 +200,21 @@ Two details: `vector`/`fts` project their score column, but `hybrid` fetches unp
 
 **You don't have to configure anything** — once the provider is activated (`hermes memory setup`, which sets `memory.provider: lancedb`), the plugin runs on its shipped defaults from [`default_config.yaml`](src/default_config.yaml). `~/.hermes/config.yaml` is purely for *overrides*: keys you set there win, keys you omit fall back to the defaults. To customize, **copy the blocks from `default_config.yaml` into your `~/.hermes/config.yaml`** and edit only what you want to change.
 
-Embeddings call the OpenAI API (`OPENAI_API_KEY` required); everything else is local. Don't edit `default_config.yaml` to change your own setup — a plugin update overwrites it; edit `~/.hermes/config.yaml`.
+By default embeddings call the OpenAI API (`OPENAI_API_KEY` required); everything else is local. Don't edit `default_config.yaml` to change your own setup — a plugin update overwrites it; edit `~/.hermes/config.yaml`.
+
+To use a different embeddings backend, point the OpenAI-compatible client at any endpoint that speaks the same shape (no code change needed). For example, fully local embeddings via Ollama:
+
+```yaml
+# ~/.hermes/config.yaml
+plugins:
+  lancedb:
+    embedding:
+      model: nomic-embed-text
+      base_url: http://localhost:11434/v1
+      api_key_env: OLLAMA_API_KEY      # any value works for local Ollama
+```
+
+Changing the embedding model (or its dimension) against an existing store requires recreating the table — the plugin fails loudly on a dim mismatch rather than silently returning nothing.
 
 ### Knob-by-knob
 
@@ -215,8 +229,11 @@ Embeddings call the OpenAI API (`OPENAI_API_KEY` required); everything else is l
 | | `rerank_top_n` | `50` | `cross-encoder` only. Enforced as `max(rerank_top_n, top_k)` so you never fetch fewer than you return. |
 | `extraction` | `enabled` | `true` | Set `false` to skip the auxiliary LLM call. |
 | | `min_turns` | `3` | Skip extraction when the user has spoken fewer than N turns. |
-| `embedding` | `provider` | `openai` | Embeddings via the OpenAI API; requires `OPENAI_API_KEY`. |
-| | `model` | `text-embedding-3-small` | 1536-dim. Embedding dim must match the existing table: recreate the table if you change models against an existing store. |
+| `embedding` | `provider` | `openai` | Label; currently always selects the OpenAI-compatible client. The actual endpoint is controlled by `base_url` / `api_key_env` below. |
+| | `model` | `text-embedding-3-small` | 1536-dim for the default. Embedding dim must match the existing table: recreate the table if you change models (or dim) against an existing store — the plugin now fails loudly on a mismatch instead of silently returning nothing. |
+| | `base_url` | `null` | `null` = OpenAI's default endpoint. Set to any OpenAI-compatible embeddings endpoint — Nous, Together, vLLM, Ollama / LM Studio in OpenAI-compatible mode (e.g. `http://localhost:11434/v1`), or a self-hosted server. |
+| | `api_key_env` | `OPENAI_API_KEY` | Name of the environment variable holding the API key. Point it at a different var to keep your embedding key separate from `OPENAI_API_KEY`. |
+| | `dimensions` | `null` | Optional output dimensions for matryoshka models (`text-embedding-3-*`). `null` = the model's native dimension. |
 | `maintenance` | `enabled` | `true` | Set `false` to disable auto-compaction. |
 | | `optimize_every_commits` | `50` | Each `add` / `delete` advances `table.version`; auto-compaction fires when delta ≥ this value. |
 | | `cleanup_older_than_days` | `7` | Passed as `timedelta(days=...)` to `table.optimize()`. Set `0` or negative to skip cleanup (compaction only). |

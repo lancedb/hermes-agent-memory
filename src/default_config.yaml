@@ -16,8 +16,15 @@ memory:
 plugins:
   lancedb:
     embedding:
-      provider: openai
+      # Embeddings go through an OpenAI-compatible client. The default is OpenAI
+      # itself, but `base_url` + `api_key_env` point it at any endpoint that
+      # speaks the same shape (Nous, Together, vLLM, Ollama / LM Studio in
+      # OpenAI-compatible mode, a self-hosted server) — no code change needed.
+      provider: openai                # label; currently selects the OpenAI-compatible client
       model: text-embedding-3-small   # 1536-dim; requires OPENAI_API_KEY
+      base_url: null                  # null = OpenAI default; e.g. http://localhost:11434/v1 for Ollama
+      api_key_env: OPENAI_API_KEY     # environment variable holding the API key
+      dimensions: null                # optional output dims (matryoshka text-embedding-3-* models)
 
     retrieval:
       # mode: vector | hybrid | fts (per-call override via the recall tool's `mode`).
