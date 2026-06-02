@@ -4,9 +4,16 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
+from .config import DEFAULTS
 from .store import RESULT_COLUMNS, build_filter
 
 logger = logging.getLogger(__name__)
+
+# The default reranker model is defined once, in config.py DEFAULTS.
+DEFAULT_RERANKER_MODEL = DEFAULTS["retrieval"]["reranker"]["model"]
+
+# Score columns Lance may attach to a search result (per mode / fusion).
+_SCORE_COLUMNS = ("_relevance_score", "_distance", "_score")
 
 
 def _limit(value: Any, default: int) -> int:
@@ -17,9 +24,7 @@ def _limit(value: Any, default: int) -> int:
     return max(1, min(parsed, 50))
 
 
-def _apply_reranker(builder, *, enabled: bool, model: str, instance: Any = None):
-    if not enabled:
-        return builder
+def _apply_cross_encoder(builder, *, model: str, instance: Any = None):
     if instance is not None:
         try:
             return builder.rerank(instance)
@@ -35,6 +40,19 @@ def _apply_reranker(builder, *, enabled: bool, model: str, instance: Any = None)
         return builder
 
 
+def _apply_linear(builder, *, weight: float):
+    """Weighted linear combination of the vector + FTS scores. `weight` is the
+    vector weight (0-1); higher favors vector. Falls back to default RRF on
+    error."""
+    try:
+        from lancedb.rerankers import LinearCombinationReranker
+
+        return builder.rerank(LinearCombinationReranker(weight=weight))
+    except Exception as exc:
+        logger.warning("lancedb linear reranker unavailable (%s); using default RRF", exc)
+        return builder
+
+
 def recall(
     store,
     query: str,
@@ -46,7 +64,8 @@ def recall(
     user_id: str = "",
     limit: int = 10,
     reranker_type: str = "rrf",
-    reranker_model: str = "cross-encoder/ettin-reranker-32m-v1",
+    reranker_model: str = DEFAULT_RERANKER_MODEL,
+    reranker_weight: float = 0.7,
     reranker: Any = None,
     rerank_top_n: int = 50,
 ) -> List[Dict[str, Any]]:
@@ -80,25 +99,40 @@ def recall(
     if where:
         builder = builder.where(where, prefilter=True)
 
+    # Hybrid fusion strategy. rrf -> leave the builder alone (LanceDB applies
+    # its default RRF). linear -> weighted score combination biased by
+    # reranker_weight. cross-encoder -> a rerank pass over an oversampled pool.
     cross_encoder_active = reranker_type == "cross-encoder"
-    builder = _apply_reranker(
-        builder,
-        enabled=cross_encoder_active,
-        model=reranker_model,
-        instance=reranker,
-    )
-    # Explicitly project the per-mode score column. Lance still auto-includes
-    # it today but emits a Rust-level deprecation warning when select() omits
-    # it; future versions will drop the column entirely.
-    projection = RESULT_COLUMNS + [score_col]
+    if cross_encoder_active:
+        builder = _apply_cross_encoder(builder, model=reranker_model, instance=reranker)
+    elif reranker_type == "linear" and mode == "hybrid":
+        builder = _apply_linear(builder, weight=reranker_weight)
     # Cross-encoder: pull rerank_top_n candidates (must be >= top_k) and let
     # the reranker reorder them; slice back to limit after .to_list().
     fetch_limit = max(rerank_top_n, limit) if cross_encoder_active else limit
     try:
-        rows = builder.select(projection).limit(fetch_limit).to_list()
+        if mode == "hybrid":
+            # Hybrid can't name a score column in select(): _relevance_score is
+            # produced only AFTER the vector + FTS legs fuse, and naming any
+            # score (_relevance_score / _distance / _score) pushes the projection
+            # down to the FTS leg and raises a schema error (which used to fall
+            # back to vector silently). Selecting base columns alone instead
+            # trips Lance's score auto-projection *deprecation warning*. So we
+            # fetch unprojected (nothing "omitted" -> no warning) and trim in
+            # Python to the same shape the other modes return — dropping the
+            # heavy `vector` column while keeping RESULT_COLUMNS + the score.
+            keep = set(RESULT_COLUMNS) | set(_SCORE_COLUMNS)
+            rows = builder.limit(fetch_limit).to_list()
+            rows = [{k: v for k, v in row.items() if k in keep} for row in rows]
+        else:
+            # vector/fts are single-leg: naming the score column is safe and
+            # avoids the auto-projection deprecation warning.
+            rows = builder.select(RESULT_COLUMNS + [score_col]).limit(fetch_limit).to_list()
         return rows[:limit]
     except Exception as exc:
-        logger.debug("lancedb recall failed (%s): %s", mode, exc)
+        # Warn (not debug): a hybrid->vector fallback silently degrades the
+        # default retrieval mode, so it must be visible.
+        logger.warning("lancedb recall failed (mode=%s); falling back: %s", mode, exc)
         if mode == "hybrid":
             return recall(
                 store,

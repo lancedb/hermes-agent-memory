@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from agent.memory_provider import MemoryProvider
 
 from .config import DEFAULTS, load_config, save_plugin_config
-from .embeddings import create_embedder
+from .embeddings import OpenAIEmbedder
 from .extraction import extract
 from .retrieval import format_prefetch, recall as recall_memories
 from .store import (
@@ -37,7 +37,7 @@ class LanceDBMemoryProvider(MemoryProvider):
         self._user_id: str = ""
         self._message_index: int = 0
         self._initialized: bool = False
-        self._embedder: Any = None
+        self._embedder: OpenAIEmbedder | None = None
         self._reranker: Any = None
         self._store: LanceDBStore | None = None
         self._tool_dispatcher = LanceDBToolDispatcher(self)
@@ -67,7 +67,12 @@ class LanceDBMemoryProvider(MemoryProvider):
         return self._store
 
     def is_available(self) -> bool:
-        """Verify hard dependencies are importable without making network calls."""
+        """Verify hard dependencies are importable.
+
+        Embeddings use the OpenAI API; the cross-encoder reranker is optional
+        and lazily imported only when enabled, so it is not required here. Per
+        the ABC contract, this must not make network calls.
+        """
         try:
             import lancedb  # noqa: F401
             import openai  # noqa: F401
@@ -251,7 +256,7 @@ class LanceDBMemoryProvider(MemoryProvider):
             print("\n  ⚠ LanceDB memory dependencies are not importable.")
             print(
                 "  Run manually: "
-                f"uv pip install --python {sys.executable} lancedb openai pyyaml"
+                f"uv pip install --python {sys.executable} lancedb openai"
             )
             print("  Then re-run: hermes memory setup\n")
             return
@@ -263,12 +268,12 @@ class LanceDBMemoryProvider(MemoryProvider):
         save_plugin_config(DEFAULTS, hermes_home)
 
         try:
-            dim = create_embedder(DEFAULTS["embedding"]).warm()
+            dim = OpenAIEmbedder(DEFAULTS["embedding"]["model"]).warm()
             print(f"\n  ✓ LanceDB memory configured (embedding dim: {dim})")
         except Exception as exc:
             print("\n  ✓ LanceDB memory configured")
             print(f"  ⚠ Embedding model warmup failed: {exc}")
-            print("  Re-run setup or start a chat after network/model cache is available.")
+            print("  Re-run setup or start a chat once OPENAI_API_KEY is set.")
         print("  Start a new session to activate.\n")
 
     def recall(
@@ -294,7 +299,8 @@ class LanceDBMemoryProvider(MemoryProvider):
             user_id=self._user_id,
             limit=limit or retrieval_cfg.get("top_k", 10),
             reranker_type=reranker_type,
-            reranker_model=reranker_cfg.get("model", "cross-encoder/ettin-reranker-32m-v1"),
+            reranker_model=reranker_cfg.get("model", DEFAULTS["retrieval"]["reranker"]["model"]),
+            reranker_weight=float(reranker_cfg.get("weight", DEFAULTS["retrieval"]["reranker"]["weight"])),
             reranker=reranker,
             rerank_top_n=int(reranker_cfg.get("rerank_top_n", 50)),
         )
@@ -402,16 +408,17 @@ class LanceDBMemoryProvider(MemoryProvider):
     def _should_write(self) -> bool:
         return self._agent_context not in {"cron", "subagent", "flush"}
 
-    def _get_embedder(self) -> Any:
+    def _get_embedder(self) -> OpenAIEmbedder:
         if self._embedder is None:
-            self._embedder = create_embedder(self._config.get("embedding", {}))
+            model_name = self._config.get("embedding", {}).get("model", "text-embedding-3-small")
+            self._embedder = OpenAIEmbedder(model_name)
         return self._embedder
 
     def _get_reranker(self) -> Any:
         if self._reranker is not None:
             return self._reranker
         reranker_cfg = self._config.get("retrieval", {}).get("reranker", {}) or {}
-        model_name = reranker_cfg.get("model") or "cross-encoder/ettin-reranker-32m-v1"
+        model_name = reranker_cfg.get("model") or DEFAULTS["retrieval"]["reranker"]["model"]
         try:
             from lancedb.rerankers import CrossEncoderReranker
         except ImportError as exc:
