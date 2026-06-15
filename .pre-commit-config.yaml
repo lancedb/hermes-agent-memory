@@ -1,0 +1,7 @@
+# Run `uv run pre-commit install` once to enable, then ruff lints on every commit.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]

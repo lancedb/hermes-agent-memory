@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@v4
+        with:
+          path: hermes-agent-memory
+
+      # The test suite imports a few Hermes modules (e.g. agent.memory_provider,
+      # tools.registry) via pytest's `pythonpath = ["../hermes-agent"]`. Those are
+      # stdlib-only imports, so a sibling checkout on the path is enough — no need
+      # to install Hermes' own dependencies.
+      - name: Check out Hermes Agent (sibling, on PYTHONPATH for tests)
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          path: hermes-agent
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Sync dev environment
+        working-directory: hermes-agent-memory
+        run: uv sync --extra dev
+
+      - name: Lint (ruff)
+        working-directory: hermes-agent-memory
+        run: uv run ruff check .
+
+      - name: Test (pytest)
+        working-directory: hermes-agent-memory
+        run: uv run pytest -v
+
+  version-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: pyproject.toml and plugin.yaml versions must match
+        run: |
+          py=$(grep -m1 '^version' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          pl=$(grep -m1 -E '^version:' plugin.yaml | sed -E 's/version:[[:space:]]*//; s/["'"'"']//g; s/[[:space:]]//g')
+          echo "pyproject.toml=$py  plugin.yaml=$pl"
+          if [ "$py" != "$pl" ]; then
+            echo "::error::version mismatch — pyproject.toml=$py, plugin.yaml=$pl (keep them in sync)"
+            exit 1
+          fi

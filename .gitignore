@@ -218,3 +218,5 @@ benchmarks/runs/
 benchmarks/data/
 scratch
 .claude
+BLOG.md
+BLOG_WRITING_INSTRUCTIONS.md
