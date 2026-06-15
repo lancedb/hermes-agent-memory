@@ -43,7 +43,7 @@ Runtime dependencies installed into Hermes's venv: `lancedb >= 0.33`, `openai`, 
 
 ## Installation: users
 
-Use this section if you want LanceDB memory in your own Hermes setup. If you plan to edit the plugin's source, jump to [Installation: developers](#installation--developers).
+Use this section if you want LanceDB memory in your own Hermes setup. If you plan to edit the plugin's source, jump to [Installation: developers](#installation-developers).
 
 > [!TIP]
 > **Trying this without disturbing an existing Hermes setup?** Run everything in an isolated *profile*. A profile gets its own config, sessions, and memory store, so nothing here touches your default Hermes. Create one first (it must exist before `-p` works):
