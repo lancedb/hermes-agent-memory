@@ -4,6 +4,8 @@ LanceDB-backed memory provider plugin for [Hermes Agent](https://github.com/Nous
 
 Embeds a workspace-scoped LanceDB table at `~/.hermes/lancedb/memories.lance` and exposes four tools to the agent: `lancedb_recall`, `lancedb_remember`, `lancedb_read`, `lancedb_forget`. Recall defaults to pure vector ANN over OpenAI embeddings, with an optional hybrid mode (vector + BM25, fused via RRF / linear / cross-encoder) per call or via config. Durable facts are extracted from sessions at pre-compress and session end. The memory store runs entirely in Hermes's Python process — no external memory service, no server (embeddings call your configured embeddings API).
 
+> **Just want to install it?** Jump straight to **[Installation (users)](#installation-users)** — about five minutes, and you can try it in an isolated profile that won't touch your existing Hermes setup.
+
 ## Features
 
 - **Vector recall by default**: ANN over OpenAI embeddings — lightest, no reranker. Switch to hybrid (vector + BM25) per call or via config.
@@ -42,6 +44,13 @@ Runtime dependencies installed into Hermes's venv: `lancedb >= 0.33`, `openai`, 
 ## Installation: users
 
 Use this section if you want LanceDB memory in your own Hermes setup. If you plan to edit the plugin's source, jump to [Installation: developers](#installation--developers).
+
+> [!TIP]
+> **Trying this without disturbing an existing Hermes setup?** Run everything in an isolated *profile*. A profile gets its own config, sessions, and memory store, so nothing here touches your default Hermes. Create one first (it must exist before `-p` works):
+> ```sh
+> hermes profile create lancedb-demo
+> ```
+> Then add `-p lancedb-demo` to every `hermes` command below — e.g. `hermes -p lancedb-demo plugins install …`, `hermes -p lancedb-demo memory setup`. When you're done, `rm -rf ~/.hermes/profiles/lancedb-demo` removes all trace. If you're new to Hermes and have nothing to protect, skip this and use the default profile (the commands as written).
 
 ### 1. Install Hermes Agent
 
@@ -84,7 +93,10 @@ uv pip install --python /path/to/your/hermes-agent/venv/bin/python3 lancedb open
 uv pip install --python ~/.hermes/hermes-agent/venv/bin/python3 lancedb openai pyyaml
 ```
 
-Embeddings call the OpenAI API, so set `OPENAI_API_KEY` in your environment (or `~/.hermes/.env`). **Only if you enable the cross-encoder reranker** (`reranker.type: cross-encoder`) do you also need `sentence-transformers` — install it the same way (`uv pip install --python … sentence-transformers`). Note it pulls in **`torch` (~2 GB)** and can exceed the setup-time install budget of 120s; the default plugin needs neither.
+Embeddings call the OpenAI API, so set `OPENAI_API_KEY` in your environment (or `~/.hermes/.env`, or the profile's `~/.hermes/profiles/<name>/.env`). **Only if you enable the cross-encoder reranker** (`reranker.type: cross-encoder`) do you also need `sentence-transformers` — install it the same way (`uv pip install --python … sentence-transformers`). Note it pulls in **`torch` (~2 GB)** and can exceed the setup-time install budget of 120s; the default plugin needs neither.
+
+> [!NOTE]
+> These packages install into Hermes's interpreter, which is **shared across all profiles** — so there's no `-p` here, and you only install them once even if you use an isolated profile.
 
 ### 4. Activate the provider
 
@@ -100,13 +112,17 @@ This writes `memory.provider: lancedb` into `~/.hermes/config.yaml` and writes t
 #  Start a new session to activate.
 ```
 
-### 5. Verify
+### 5. Verify (don't skip this)
+
+The most common "memory isn't working" report is simply the provider not being active — Hermes silently falls back to its built-in notes if `memory.provider` isn't set, and you'd never call the `lancedb_*` tools. Confirm it's on before you start chatting:
 
 ```sh
+hermes memory status          # look for: Provider: lancedb, installed ✓, available ✓
 hermes plugins list           # should list "lancedb"
-hermes memory status
 hermes chat -q "Hello"        # agent.log should contain `lancedb provider initialized`
 ```
+
+If `memory status` shows no provider (or the wrong one), re-run `hermes memory setup` and pick `lancedb`. (Add `-p <name>` to all three if you used an isolated profile.)
 
 ---
 
@@ -131,6 +147,9 @@ ln -sf /path/to/your/hermes-agent-memory ~/.hermes/plugins/lancedb
 ```
 
 Edits to source files are picked up on the next Hermes session: no reinstall.
+
+> [!WARNING]
+> Once this symlink exists, **don't also run `hermes plugins install lancedb/...`** — the installer will refuse with `Invalid plugin name 'lancedb': resolves outside the plugins directory` because the path points outside `~/.hermes/plugins`. The symlink *is* your install; just edit and restart Hermes. (Profiles are isolated, so you can still `hermes -p <name> plugins install …` into a separate profile.)
 
 ### 3. Install runtime deps into Hermes's venv
 
@@ -302,7 +321,7 @@ If `maintenance.enabled: false`, none of this runs and the dataset will grow wit
 
 **`hermes plugins list` doesn't show `lancedb`.** Check the symlink: `ls -l ~/.hermes/plugins/lancedb` should resolve to this repo (or wherever you installed it).
 
-**`lancedb_*` tools missing from the agent.** Confirm `memory.provider: lancedb` in `~/.hermes/config.yaml` and that `agent.log` contains `lancedb provider initialized` on session start.
+**`lancedb_*` tools missing, or the agent only writes built-in memory.** The provider isn't active. Run `hermes memory status` — you want `Provider: lancedb` with `available ✓`. If it's blank, the provider was never switched on: run `hermes memory setup` and pick `lancedb` (this sets `memory.provider: lancedb` in `~/.hermes/config.yaml`). Confirm `agent.log` contains `lancedb provider initialized` on session start. Using a profile? Add `-p <name>` to these commands.
 
 **Recall fails with an auth error.** Embeddings call the OpenAI API — make sure `OPENAI_API_KEY` is set in the environment (or `~/.hermes/.env`). With `reranker.type: cross-encoder`, the sentence-transformers reranker model is downloaded to `~/.cache/huggingface/` on first use and preloaded during `initialize()` so the first user query doesn't pay the model-load cost.
 
