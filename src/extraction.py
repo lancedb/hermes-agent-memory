@@ -38,7 +38,7 @@ def extract(messages: List[Dict[str, Any]], context: Dict[str, Any] | None = Non
     if not messages:
         return []
     try:
-        from agent.auxiliary_client import call_llm
+        from agent.auxiliary_client import call_llm, extract_content_or_reasoning
     except Exception as exc:
         logger.debug("auxiliary client unavailable for lancedb extraction: %s", exc)
         return []
@@ -50,16 +50,22 @@ def extract(messages: List[Dict[str, Any]], context: Dict[str, Any] | None = Non
                 {"role": "system", "content": EXTRACTION_SYSTEM},
                 {"role": "user", "content": format_messages_with_indexes(messages)},
             ],
-            response_format={"type": "json_object"},
+            # call_llm() has no top-level response_format kwarg, only
+            # extra_body — passing it directly raises TypeError, which the
+            # except-clause below was silently swallowing, so extraction
+            # never actually ran.
+            extra_body={"response_format": {"type": "json_object"}},
             timeout=30,
         )
     except Exception as exc:
         logger.debug("lancedb extraction call failed: %s", exc)
         return []
 
-    text = getattr(response, "content", response)
-    if not isinstance(text, str):
-        text = str(text)
+    # call_llm() returns the raw response object (.choices[0].message.content),
+    # not something with a top-level .content attribute — use the same helper
+    # every other Hermes caller uses to pull text out (also handles
+    # reasoning-model content=None fallback).
+    text = extract_content_or_reasoning(response).strip()
     try:
         payload = json.loads(text)
     except Exception as exc:
