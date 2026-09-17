@@ -11,8 +11,8 @@ authors = [
 dependencies = [
     "lancedb>=0.33.0",
     "pyyaml",
-    "openai>=2.38.0",
-    "requests>=2.34.2",
+    "openai>=2.24.0",
+    "requests>=2.31",
     "botocore>=1.43.16",
 ]
 
