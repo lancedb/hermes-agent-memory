@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.14"]
     steps:
       - name: Check out plugin
         uses: actions/checkout@v4
@@ -37,13 +37,20 @@ jobs:
         working-directory: hermes-agent-memory
         run: uv sync --extra dev
 
+      - name: Test supported minimum dependencies on Hermes Python
+        if: matrix.python-version == '3.14'
+        working-directory: hermes-agent-memory
+        run: >-
+          uv pip install --python .venv/bin/python
+          'lancedb==0.33.0' 'openai==2.24.0' 'requests==2.33.0' 'botocore==1.42.97'
+
       - name: Lint (ruff)
         working-directory: hermes-agent-memory
-        run: uv run ruff check .
+        run: uv run --no-sync ruff check .
 
       - name: Test (pytest)
         working-directory: hermes-agent-memory
-        run: uv run pytest -v
+        run: uv run --no-sync pytest -v
 
   version-sync:
     runs-on: ubuntu-latest

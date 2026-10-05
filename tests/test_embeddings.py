@@ -146,3 +146,48 @@ def test_client_uses_configured_base_url_and_key(monkeypatch):
     client = e.client  # constructs the real OpenAI-compatible client
     assert client.api_key == "test-key-123"
     assert str(client.base_url).rstrip("/") == "http://localhost:11434/v1"
+
+
+def test_embed_with_real_sdk_and_mock_http(monkeypatch):
+    import json
+
+    import httpx
+
+    requests = []
+
+    def send(client, request, **kwargs):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        assert str(request.url) == "http://embeddings.test/v1/embeddings"
+        assert request.headers["authorization"] == "Bearer offline-test-key"
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "object": "list",
+                "model": payload["model"],
+                "data": [
+                    {"object": "embedding", "index": i, "embedding": [float(len(text)), 0.5]}
+                    for i, text in enumerate(payload["input"])
+                ],
+                "usage": {"prompt_tokens": 3, "total_tokens": 3},
+            },
+        )
+
+    monkeypatch.setattr(httpx.Client, "send", send)
+    monkeypatch.setenv("TEST_EMBEDDING_KEY", "offline-test-key")
+    embedder = emb_mod.OpenAICompatibleEmbedder(
+        "compatible-model",
+        base_url="http://embeddings.test/v1",
+        api_key_env="TEST_EMBEDDING_KEY",
+        dimensions=2,
+        max_batch=2,
+    )
+    try:
+        assert embedder.embed(["alice", "", "bob"]) == [[5.0, 0.5], [1.0, 0.5], [3.0, 0.5]]
+        assert [payload["input"] for payload in requests] == [["alice", " "], ["bob"]]
+        assert all(payload["dimensions"] == 2 for payload in requests)
+        assert embedder.client.max_retries == 6
+        assert embedder.client.timeout == 60.0
+    finally:
+        embedder.client.close()
