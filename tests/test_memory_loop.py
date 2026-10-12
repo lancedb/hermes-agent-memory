@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _load_plugin():
     root = Path(__file__).resolve().parents[1]
@@ -155,6 +157,13 @@ def test_reranker_cached_and_fetches_rerank_top_n(tmp_path, monkeypatch):
     construction_count = {"n": 0}
     rerank_seen = {"sizes": []}
 
+    def _scored(table):
+        # LanceDB rejects a rerank result without _relevance_score; the real
+        # CrossEncoderReranker adds it, so the stub must too.
+        import pyarrow as pa
+
+        return table.append_column("_relevance_score", pa.array([1.0] * len(table), pa.float32()))
+
     class StubReranker:
         def __init__(self, *, model_name, column):
             construction_count["n"] += 1
@@ -169,15 +178,15 @@ def test_reranker_cached_and_fetches_rerank_top_n(tmp_path, monkeypatch):
             except Exception:
                 combined = vector_results if len(vector_results) >= len(fts_results) else fts_results
             rerank_seen["sizes"].append(len(combined))
-            return combined
+            return _scored(combined)
 
         def rerank_vector(self, query, vector_results):
             rerank_seen["sizes"].append(len(vector_results))
-            return vector_results
+            return _scored(vector_results)
 
         def rerank_fts(self, query, fts_results):
             rerank_seen["sizes"].append(len(fts_results))
-            return fts_results
+            return _scored(fts_results)
 
     monkeypatch.setattr(lr, "CrossEncoderReranker", StubReranker)
 
@@ -207,7 +216,8 @@ def test_reranker_cached_and_fetches_rerank_top_n(tmp_path, monkeypatch):
 
     # Multiple recall calls should reuse the cached reranker — not construct each time.
     for _ in range(3):
-        provider.recall("pytest", mode="vector", kind="fact", limit=3)
+        rows = provider.recall("pytest", mode="vector", kind="fact", limit=3)
+        assert len(rows) == 3, rows
 
     assert construction_count["n"] == 1, (
         f"expected reranker constructed once, got {construction_count['n']}"
@@ -219,3 +229,103 @@ def test_reranker_cached_and_fetches_rerank_top_n(tmp_path, monkeypatch):
     assert max(rerank_seen["sizes"]) > 3, rerank_seen["sizes"]
 
     provider.shutdown()
+
+
+# Recall on a table that cannot be read. lancedb_read on the same table raises,
+# and Hermes's MemoryManager turns a raise into a tool error for the model, so
+# recall should raise too rather than answer "no memories".
+
+
+def _seeded_store(tmp_path):
+    plugin = _load_plugin()
+    store_mod = importlib.import_module(f"{plugin.__name__}.src.store")
+    retrieval = importlib.import_module(f"{plugin.__name__}.src.retrieval")
+    store = store_mod.LanceDBStore(tmp_path, FakeEmbedder(), maintenance_enabled=False)
+    store.add_rows(
+        [
+            {"kind": "fact", "content": "the user prefers pytest", "agent_workspace": "ws"},
+            {"kind": "fact", "content": "the user drinks tea", "agent_workspace": "ws"},
+        ]
+    )
+    assert len(retrieval.recall(store, "pytest", mode="vector", workspace="ws")) == 2
+    return store, retrieval
+
+
+def _remove_data_files(store):
+    """Stand in for storage that can no longer be read."""
+    files = list(Path(store.db_path).glob("*.lance/data/*"))
+    assert files, "expected the table to have data files"
+    for file in files:
+        file.unlink()
+
+
+@pytest.mark.parametrize("mode", ["vector", "fts", "hybrid"])
+def test_recall_raises_when_table_cannot_be_read(tmp_path, mode):
+    store, retrieval = _seeded_store(tmp_path)
+    _remove_data_files(store)
+    with pytest.raises(Exception, match="Not found"):
+        retrieval.recall(store, "pytest", mode=mode, workspace="ws")
+
+
+def test_recall_tool_does_not_answer_no_results_on_read_failure(tmp_path):
+    plugin = _load_plugin()
+    provider = plugin.LanceDBMemoryProvider()
+    provider._embedder = FakeEmbedder()
+    provider.initialize(
+        "session-read-failure",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        agent_context="primary",
+        agent_identity="test",
+        agent_workspace="workspace-rf",
+    )
+    try:
+        provider.handle_tool_call("lancedb_remember", {"content": "The user prefers pytest."})
+        before = json.loads(
+            provider.handle_tool_call("lancedb_recall", {"query": "pytest", "mode": "vector"})
+        )
+        assert before["total"] == 1
+        _remove_data_files(provider.store)
+        with pytest.raises(Exception, match="Not found"):
+            provider.handle_tool_call("lancedb_recall", {"query": "pytest", "mode": "vector"})
+    finally:
+        provider.shutdown()
+
+
+def test_recall_on_empty_store_returns_empty(tmp_path):
+    plugin = _load_plugin()
+    store_mod = importlib.import_module(f"{plugin.__name__}.src.store")
+    retrieval = importlib.import_module(f"{plugin.__name__}.src.retrieval")
+    store = store_mod.LanceDBStore(tmp_path, FakeEmbedder(), maintenance_enabled=False)
+    store.open()
+    assert retrieval.recall(store, "anything", mode="vector", workspace="ws") == []
+
+
+def test_get_by_id_raises_when_table_cannot_be_read(tmp_path):
+    store, _ = _seeded_store(tmp_path)
+    _remove_data_files(store)
+    with pytest.raises(Exception, match="Not found"):
+        store.get_by_id("fact_anything")
+
+
+def test_hybrid_failure_still_falls_back_to_vector(tmp_path):
+    from lancedb.rerankers import Reranker
+
+    calls = []
+
+    class BrokenHybridReranker(Reranker):
+        def rerank_hybrid(self, query, vector_results, fts_results):
+            calls.append(len(vector_results))
+            raise RuntimeError("hybrid fusion failed")
+
+    store, retrieval = _seeded_store(tmp_path)
+    rows = retrieval.recall(
+        store,
+        "pytest",
+        mode="hybrid",
+        workspace="ws",
+        reranker_type="cross-encoder",
+        reranker=BrokenHybridReranker(),
+    )
+    assert calls, "expected the hybrid leg to run and fail"
+    assert len(rows) == 2

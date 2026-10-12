@@ -132,7 +132,8 @@ def recall(
     except Exception as exc:
         # Warn (not debug): a hybrid->vector fallback silently degrades the
         # default retrieval mode, so it must be visible.
-        logger.warning("lancedb recall failed (mode=%s); falling back: %s", mode, exc)
+        fallback = "; falling back to vector" if mode == "hybrid" else ""
+        logger.warning("lancedb recall failed (mode=%s)%s: %s", mode, fallback, exc)
         if mode == "hybrid":
             return recall(
                 store,
@@ -146,7 +147,7 @@ def recall(
                 reranker_type="rrf",
                 reranker_model=reranker_model,
             )
-        return []
+        raise
 
 
 def format_prefetch(rows: list[dict[str, Any]], *, max_items: int = 5) -> str:
