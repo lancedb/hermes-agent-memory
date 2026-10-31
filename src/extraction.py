@@ -7,6 +7,11 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
+# Seconds to wait for one extraction reply. The shipped value, 30,
+# is tuned for a hosted model; a local 31B model on Apple Silicon
+# took 48 to 165 seconds per note in lab report 002.
+EXTRACTION_TIMEOUT = 300
+
 EXTRACTION_SYSTEM = """Extract durable workspace memories from this conversation.
 Return JSON with a facts array. Each fact has:
   content    - one concise durable fact
@@ -33,6 +38,21 @@ def format_messages_with_indexes(messages: List[Dict[str, Any]]) -> str:
     return "\n\n".join(lines)
 
 
+def _reply_text(response: Any) -> Any:
+    """Return the assistant text from whatever call_llm handed back.
+
+    Hermes's auxiliary client returns a ChatCompletion; older builds
+    returned an object with a ``content`` attribute. Read the first
+    choice when there is one, fall back to ``content``, then to the
+    raw value so the json.loads below reports it.
+    """
+    choices = getattr(response, "choices", None)
+    if choices:
+        message = getattr(choices[0], "message", None)
+        return getattr(message, "content", None) or ""
+    return getattr(response, "content", response)
+
+
 def extract(messages: List[Dict[str, Any]], context: Dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Extract durable facts using Hermes's auxiliary LLM client."""
     if not messages:
@@ -50,14 +70,14 @@ def extract(messages: List[Dict[str, Any]], context: Dict[str, Any] | None = Non
                 {"role": "system", "content": EXTRACTION_SYSTEM},
                 {"role": "user", "content": format_messages_with_indexes(messages)},
             ],
-            response_format={"type": "json_object"},
-            timeout=30,
+            extra_body={"response_format": {"type": "json_object"}},
+            timeout=EXTRACTION_TIMEOUT,
         )
     except Exception as exc:
-        logger.debug("lancedb extraction call failed: %s", exc)
+        logger.warning("lancedb extraction call failed: %s", exc)
         return []
 
-    text = getattr(response, "content", response)
+    text = _reply_text(response)
     if not isinstance(text, str):
         text = str(text)
     try:
